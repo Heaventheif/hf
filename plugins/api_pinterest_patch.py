@@ -18,7 +18,7 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # 2. أضف هذا الـ Model قبل تعريف app
 # ═══════════════════════════════════════════════════════════════════════════
-from pydantic import BaseModel
+
 class PinterestScrapeRequest(BaseModel):
     """نموذج طلب البحث عن صور Pinterest"""
     query: str = Field(..., description="كلمة البحث", min_length=2)
