@@ -59,6 +59,14 @@ try:
 except Exception:  # pragma: no cover
     _HAS_CLOUDSCRAPER = False
 
+try:
+    # نُعيد استخدام BrowserManager الجاهز من scraper/browser.py (يستخدمه pinterest.py
+    # أيضاً) بدل تكرار منطق تشغيل Chromium من الصفر.
+    from scraper.browser import BrowserManager  # type: ignore
+    _HAS_PLAYWRIGHT = True
+except Exception:  # pragma: no cover
+    _HAS_PLAYWRIGHT = False
+
 
 # ===========================================================================
 # Plugin metadata (يقرأها plugin_loader)
@@ -192,6 +200,8 @@ class CloudflareBypass:
 
     def __init__(self) -> None:
         self._cs_scraper: Optional[Any] = None  # cloudscraper instance
+        self._browser: Optional["BrowserManager"] = None  # playwright — lazy singleton
+        self._browser_lock = asyncio.Lock()
         self._lock = asyncio.Lock()
         self._last_request_at = 0.0
         self._min_interval = 0.4  # أقل فاصل زمني بين طلبين لنفس الموقع
@@ -286,6 +296,59 @@ class CloudflareBypass:
         except Exception as exc:  # pragma: no cover
             return FetchResult(False, 0, f"cloudscraper-error: {exc}", url, "cloudscraper")
 
+    async def _get_browser(self) -> Optional["BrowserManager"]:
+        """يشغّل Chromium مرة واحدة فقط ويشاركه بين كل الطلبات."""
+        if not _HAS_PLAYWRIGHT:
+            return None
+        if self._browser is None:
+            async with self._browser_lock:
+                if self._browser is None:  # تحقق ثانٍ بعد أخذ القفل
+                    b = BrowserManager()
+                    await b.start()
+                    self._browser = b
+        return self._browser
+
+    async def _try_playwright(self, url: str) -> FetchResult:
+        """الطبقة الثالثة — متصفح Chromium حقيقي عبر Playwright.
+
+        هذه هي الطبقة الوحيدة القادرة على حل تحديات Cloudflare التفاعلية
+        ("Just a moment..." / "Verify you are human") لأنها تُنفّذ الجافاسكربت
+        فعلياً بدل تقليد بصمة TLS فقط (على عكس curl_cffi وcloudscraper).
+        """
+        if not _HAS_PLAYWRIGHT:
+            return FetchResult(False, 0, "", url, "playwright")
+        try:
+            browser = await self._get_browser()
+            if browser is None:
+                return FetchResult(False, 0, "", url, "playwright")
+
+            async with browser.page() as page:
+                resp = await page.goto(url, wait_until="domcontentloaded", timeout=REQUEST_TIMEOUT * 1000)
+                status = resp.status if resp else 0
+
+                # انتظر اختفاء تحدي Cloudflare (يتحول تلقائياً عادة خلال 3-6 ثواني)
+                for _ in range(10):
+                    html = await page.content()
+                    if not self._looks_like_cf_challenge(html, status if status else 403):
+                        break
+                    await page.wait_for_timeout(1000)
+                else:
+                    html = await page.content()
+
+                final_status = status or (200 if html else 0)
+                ok = bool(html) and not self._looks_like_cf_challenge(
+                    html, final_status if final_status else 403
+                )
+                return FetchResult(
+                    ok=ok,
+                    status=final_status,
+                    text=html,
+                    final_url=page.url,
+                    strategy="playwright",
+                )
+        except Exception as exc:  # pragma: no cover
+            return FetchResult(False, 0, f"playwright-error: {exc}", url, "playwright")
+
     async def _try_httpx(self, url: str) -> FetchResult:
         try:
             async with httpx.AsyncClient(
@@ -310,7 +373,7 @@ class CloudflareBypass:
 
     # ---------- الـ API الموحّدة ----------
     async def get(self, url: str, use_cache: bool = True) -> FetchResult:
-        """يجلب URL مع تجاوز CF. waterfall: cffi → cloudscraper → httpx."""
+        """يجلب URL مع تجاوز CF. waterfall: cffi → cloudscraper → playwright → httpx."""
         if use_cache:
             cached = _cache.get(f"get::{url}")
             if cached is not None:
@@ -318,31 +381,47 @@ class CloudflareBypass:
 
         await self._throttle()
 
+        last_result: Optional[FetchResult] = None
+
         # 1) curl_cffi (الأسرع والأقوى عادةً)
         result = await asyncio.to_thread(self._try_cffi, url)
+        last_result = result
         if result.ok:
             if use_cache:
                 _cache.set(f"get::{url}", result.text, ttl=120)
             return result
 
-        # 2) cloudscraper (حلّ JS challenges)
+        # 2) cloudscraper (حلّ JS challenges الخفيفة)
         if _HAS_CLOUDSCRAPER:
             result2 = await asyncio.to_thread(self._try_cloudscraper, url)
+            last_result = result2
             if result2.ok:
                 if use_cache:
                     _cache.set(f"get::{url}", result2.text, ttl=120)
                 return result2
 
-        # 3) httpx عادي (قد ينجح لو الـ challenge مؤقّت)
-        result3 = await self._try_httpx(url)
-        if result3.ok:
-            if use_cache:
-                _cache.set(f"get::{url}", result3.text, ttl=120)
-            return result3
+        # 3) playwright (متصفح حقيقي — يحلّ تحديات "Just a moment" التفاعلية
+        #    التي لا يقدر cffi ولا cloudscraper على حلها لأنها تتطلب تنفيذ JS فعلي)
+        if _HAS_PLAYWRIGHT:
+            result3 = await self._try_playwright(url)
+            last_result = result3
+            if result3.ok:
+                if use_cache:
+                    _cache.set(f"get::{url}", result3.text, ttl=120)
+                return result3
 
-        # فشل كامل — نُرجع أفضل محاولة (cffi عادةً) ليتمكّن الـ parser
-        # من رؤية الخطأ الحقيقي.
-        return result
+        # 4) httpx عادي — ملاذ أخير بلا أي تجاوز حماية، قد ينجح فقط لو
+        #    الـ challenge كان مؤقتاً أو غاب عن هذا الطلب بالذات.
+        result4 = await self._try_httpx(url)
+        last_result = result4
+        if result4.ok:
+            if use_cache:
+                _cache.set(f"get::{url}", result4.text, ttl=120)
+            return result4
+
+        # فشل كامل — نُرجع آخر محاولة فعلياً حصلت (وليس دائماً محاولة cffi
+        # الأولى) حتى يعكس حقل "strategy" الطبقة التي فشلت فعلياً في الأخير.
+        return last_result if last_result is not None else result
 
     async def post(self, url: str, data: Dict[str, str]) -> FetchResult:
         """POST مع تجاوز CF (مُحسَّن لطلبات WordPress AJAX)."""
@@ -842,6 +921,7 @@ def register(app):  # noqa: C901 — accepts FastAPI app
             "layers": {
                 "curl_cffi": _HAS_CFFI,
                 "cloudscraper": _HAS_CLOUDSCRAPER,
+                "playwright": _HAS_PLAYWRIGHT,
             },
         }
 
