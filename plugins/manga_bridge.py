@@ -191,16 +191,34 @@ def _scrape_chapter_sync(manga: str, chapter: str):
 
             chapter_title, chapter_url = page.title(), page.url
 
+            logger.info(f"[manga-bridge] {len(srcs)} صورة موجودة في الصفحة، جاري التحميل...")
+
+            # مهم: بنحتفظ بس بالصور اللي نجحت، وبنرقّمها من جديد بالترتيب
+            # المتتابع (0, 1, 2...) — لو حافظنا على الترقيم الأصلي وفيه صور
+            # فشلت في النص، هيبقى فيه فجوات (مثلاً 0,1,4,5...) بينما
+            # image_count المُرسَل هيفضل بيقول العدد الكلي الأصلي، فالبوت
+            # هيحاول يحمّل index مش موجود ويرجعله 404 لصور تانية سليمة أصلاً.
             files = []
-            for i, src in enumerate(srcs):
-                try:
-                    resp = context.request.get(src, headers={"Referer": chapter_url}, timeout=20000)
-                    if resp.ok:
-                        files.append((i, resp.body()))
-                    else:
-                        logger.warning(f"فشل تحميل صورة {i}: HTTP {resp.status}")
-                except Exception as e:
-                    logger.warning(f"فشل تحميل صورة {i}: {e}")
+            for original_i, src in enumerate(srcs):
+                resp = None
+                for attempt in range(2):  # محاولة + إعادة محاولة واحدة
+                    try:
+                        resp = context.request.get(src, headers={"Referer": chapter_url}, timeout=20000)
+                        if resp.ok:
+                            break
+                        if attempt == 0:
+                            time.sleep(1)
+                    except Exception as e:
+                        resp = None
+                        if attempt == 0:
+                            time.sleep(1)
+                        else:
+                            logger.warning(f"فشل تحميل صورة (ترتيبها الأصلي {original_i}): {e} — {src}")
+
+                if resp is not None and resp.ok:
+                    files.append((len(files), resp.body()))
+                elif resp is not None:
+                    logger.warning(f"فشل تحميل صورة (ترتيبها الأصلي {original_i}): HTTP {resp.status} — {src}")
 
             return chapter_title, chapter_url, files
         finally:
