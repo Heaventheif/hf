@@ -6,12 +6,15 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    fontconfig \
     libcairo2 \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
     libgdk-pixbuf-xlib-2.0-0 \
     libffi-dev \
     fonts-noto-core \
+    fonts-noto-ui-core \
     # Playwright / Chromium dependencies
     libnss3 \
     libnspr4 \
