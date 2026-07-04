@@ -303,16 +303,25 @@ class CloudflareBypass:
             return FetchResult(False, 0, f"cloudscraper-error: {exc}", url, "cloudscraper")
 
     async def _get_browser(self) -> Optional["AntiDetectionBrowser"]:
-        """يشغّل متصفح anti-detection (browser_engine) مرة واحدة فقط ويشاركه بين كل الطلبات."""
+        """يشغّل متصفح anti-detection (browser_engine) مرة واحدة فقط ويشاركه بين كل الطلبات.
+
+        لو Cloudflare يعرض تحدي تفاعلي (Turnstile) رغم استخدام متصفح حقيقي،
+        السبب الأرجح هو سمعة IP الداتا سنتر (HF Spaces) مو تمويه المتصفح
+        نفسه. MANGA_PROXY (اختياري) يسمح بتمرير proxy سكني/موبايل لتقليل
+        هذا الاحتمال — بدونه، مواقع Cloudflare القوية قد تبقى غير قابلة
+        للتجاوز من هذي البيئة.
+        """
         if not _HAS_BROWSER_ENGINE:
             return None
         if self._browser is None:
             async with self._browser_lock:
                 if self._browser is None:  # تحقق ثانٍ بعد أخذ القفل
-                    b = AntiDetectionBrowser(headless=True)
+                    proxy = os.getenv("MANGA_PROXY") or None
+                    b = AntiDetectionBrowser(headless=True, proxy=proxy)
                     await b.start()
                     self._browser = b
         return self._browser
+
 
     async def _try_browser_engine(self, url: str) -> FetchResult:
         """الطبقة الثالثة — متصفح حقيقي عبر browser_engine (nodriver + curl_cffi).
