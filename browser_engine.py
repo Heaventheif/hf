@@ -120,24 +120,42 @@ class AntiDetectionBrowser:
 
     # ---- internal helpers ----
     async def _solve_challenges(self):
-        """Wait for Cloudflare / common WAF challenges to clear."""
-        for _ in range(5):
+        """Wait for Cloudflare / common WAF challenges to clear.
+
+        ملاحظة صادقة: هذا يحل فقط التحدي "التلقائي" (JS proof-of-work يأخذ
+        ٣-٥ ثواني وينعدي وحده لو المتصفح مو مصنّف كـ bot). لو Cloudflare
+        يعرض Turnstile تفاعلي (checkbox حقيقي يحتاج ضغطة) بسبب سمعة IP
+        الداتا سنتر، ما فيه طريقة موثوقة تلقائية لحله بدون خدمة حل خارجية —
+        وهذا شيء ما نقدر نبنيه هنا. أقصى شيء نقدر نسويه هو الانتظار الكافي
+        والتأكد إننا لا نتخلى مبكراً لو كان تحدي تلقائي بس بطيء.
+        """
+        max_attempts = 6
+        for attempt in range(max_attempts):
             title = await self.page.evaluate("document.title")
             body = await self.page.evaluate("document.body.innerText")
+            combined = (title + " " + body).lower()
             blocked = ["just a moment", "attention required", "checking your browser", "ddos protection"]
-            if any(ind in (title + body).lower() for ind in blocked):
-                log.info("Challenge detected, waiting...")
-                await asyncio.sleep(5)
-                try:
-                    await self.page.evaluate(
-                        """document.querySelector('input[type="submit"]')?.click()"""
-                    )
-                except Exception:
-                    pass
-                await asyncio.sleep(5)
-            else:
+            if not any(ind in combined for ind in blocked):
                 return True
-        log.warning("Challenge may not be solved after retries.")
+
+            # هل فيه Turnstile widget فعلي بالصفحة (checkbox تفاعلي)؟
+            has_turnstile = await self.page.evaluate(
+                """!!document.querySelector('iframe[src*="challenges.cloudflare.com"], '
+                   + '.cf-turnstile, #cf-turnstile')"""
+            )
+            if has_turnstile:
+                log.warning(
+                    "Turnstile تفاعلي مكتشف (محاولة %d/%d) — هذا يحتاج تدخل "
+                    "بشري أو خدمة حل خارجية، الانتظار وحده لن يحله.",
+                    attempt + 1, max_attempts,
+                )
+            else:
+                log.info("تحدي تلقائي مكتشف (محاولة %d/%d)، بالانتظار...", attempt + 1, max_attempts)
+
+            await asyncio.sleep(5 + random.uniform(0, 2))
+
+        log.warning("Challenge may not be solved after %d retries.", max_attempts)
+        return False
 
     async def _human_interact(self):
         """Perform randomized scrolling and mouse movements."""
