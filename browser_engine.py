@@ -120,14 +120,8 @@ class AntiDetectionBrowser:
 
     # ---- internal helpers ----
     async def _solve_challenges(self):
-        """Wait for Cloudflare / common WAF challenges to clear.
-
-        ملاحظة صادقة: هذا يحل فقط التحدي "التلقائي" (JS proof-of-work يأخذ
-        ٣-٥ ثواني وينعدي وحده لو المتصفح مو مصنّف كـ bot). لو Cloudflare
-        يعرض Turnstile تفاعلي (checkbox حقيقي يحتاج ضغطة) بسبب سمعة IP
-        الداتا سنتر، ما فيه طريقة موثوقة تلقائية لحله بدون خدمة حل خارجية —
-        وهذا شيء ما نقدر نبنيه هنا. أقصى شيء نقدر نسويه هو الانتظار الكافي
-        والتأكد إننا لا نتخلى مبكراً لو كان تحدي تلقائي بس بطيء.
+        """
+        Wait for Cloudflare / common WAF challenges to clear.
         """
         max_attempts = 6
         for attempt in range(max_attempts):
