@@ -30,7 +30,7 @@ DEFAULT_HEADERS = {
     "accept-language": "en-US,en;q=0.9",
     "cache-control": "no-cache",
     "pragma": "no-cache",
-    "sec-ch-ua": '"Not)A;Brand";v="99", "Chromium";v="127", "Google Chrome";v="127"',
+    "sec-ch-ua": '"Not)A;Brand";v="99", "Chromium";v="124", "Google Chrome";v="124"',
     "sec-ch-ua-mobile": "?0",
     "sec-ch-ua-platform": '"Linux"',
     "sec-fetch-dest": "document",
@@ -53,7 +53,7 @@ class HttpClient:
 
     async def start(self) -> None:
         self._session = AsyncSession(
-            impersonate="chrome127",
+            impersonate="chrome124",
             headers=DEFAULT_HEADERS,
             timeout=settings.timeout_s,
         )
@@ -68,6 +68,9 @@ class HttpClient:
         if self._session:
             await self._session.close()
             self._session = None
+
+    # أخطاء "دائمة" — إعادة المحاولة عليها مضمونة الفشل، لا فائدة من الانتظار.
+    _PERMANENT_ERROR_MARKERS = ("not supported", "unknown impersonate")
 
     async def get(self, url: str) -> str:
         """GET ``url`` with retries and TLS fingerprint impersonation."""
@@ -86,8 +89,15 @@ class HttpClient:
                     raise RuntimeError(f"HTTP {resp.status_code}")
                 resp.raise_for_status()
                 return resp.text
-            except Exception as exc:  # network, 429, 5xx
+            except Exception as exc:  # network, 429, 5xx, أو خطأ إعداد دائم
                 last_err = exc
+                if any(m in str(exc).lower() for m in self._PERMANENT_ERROR_MARKERS):
+                    log.error(
+                        "GET %s: خطأ إعداد دائم (%s) — لا فائدة من إعادة المحاولة، "
+                        "الانتقال المباشر للفشل (mode=full سيتكفّل بالمهمة).",
+                        url, exc,
+                    )
+                    raise RuntimeError(f"GET {url} permanent config error: {exc}") from exc
                 wait = min(30, (2 ** attempt) + random.random())
                 log.warning(
                     "GET %s attempt %d failed: %s — sleeping %.1fs",
