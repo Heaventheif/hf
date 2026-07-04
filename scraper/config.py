@@ -52,6 +52,11 @@ class Settings:
     # full = Playwright headless browser
     default_mode: str = os.getenv("SCRAPER_MODE", "auto")
 
+    # ---- Auth / cookies ---------------------------------------------------
+    # مسار ملف كوكيز Netscape — تُستخرج منه فقط كوكيز pinterest.com
+    # (انظر scraper/cookies.py). القيمة الافتراضية تفترض أن الملف بجانب main.py.
+    cookies_file: str = os.getenv("SCRAPER_COOKIES_FILE", "cookies.txt")
+
     # ---- API / persistence ---------------------------------------------
     data_dir: str = os.getenv("SCRAPER_DATA_DIR", "./data")
     log_level: str = os.getenv("SCRAPER_LOG_LEVEL", "INFO")

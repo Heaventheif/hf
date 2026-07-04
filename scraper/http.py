@@ -18,6 +18,7 @@ import cloudscraper
 from curl_cffi.requests import AsyncSession
 
 from .config import settings
+from .cookies import cookies_as_header_dict, load_pinterest_cookies
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +57,12 @@ class HttpClient:
             headers=DEFAULT_HEADERS,
             timeout=settings.timeout_s,
         )
+        # حقن كوكيز pinterest.com (لو موجودة) — يحوّل الطلبات من "زائر" إلى
+        # "مستخدم مسجّل دخول"، وهذا يقلّل كثيراً من فرص ظهور challenge/تقييد.
+        cookies = load_pinterest_cookies(settings.cookies_file)
+        if cookies:
+            self._session.cookies.update(cookies_as_header_dict(cookies))
+            log.info("[http] تم حقن %d كوكيز pinterest.com بجلسة curl_cffi", len(cookies))
 
     async def close(self) -> None:
         if self._session:

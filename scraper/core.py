@@ -22,7 +22,13 @@ import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
-from .browser import BrowserManager, is_graphql_response, safe_json
+from .browser import (
+    BrowserManager,
+    goto_with_retry,
+    is_graphql_response,
+    safe_json,
+    wait_for_challenge_to_clear,
+)
 from .config import settings
 from .exporters import flatten_pin, to_csv, to_json
 from .http import HttpClient
@@ -334,39 +340,50 @@ class PinterestScraper:
         pins: List[Pin] = []
         seen: set[str] = set()
 
-        async with self._browser.page() as page:
-            page.on(
-                "response",
-                lambda r: asyncio.create_task(_maybe_capture(r, graphql_data)),
+        try:
+            async with self._browser.page() as page:
+                page.on(
+                    "response",
+                    lambda r: asyncio.create_task(_maybe_capture(r, graphql_data)),
+                )
+
+                await goto_with_retry(page, url, timeout=30_000, retries=2)
+                await wait_for_challenge_to_clear(page, max_wait_s=20.0)
+                # Wait for either blueprint cards OR pin anchors to appear
+                try:
+                    await page.wait_for_selector(
+                        ".ADXRXN, a[href*='/pin/']", timeout=15_000
+                    )
+                except Exception:
+                    log.warning("No pin cards found on %s within timeout", url)
+
+                for i in range(scrolls):
+                    raw = await page.evaluate(EXTRACT_JS)
+                    for d in raw:
+                        pid = d.get("id")
+                        if not pid or pid in seen:
+                            continue
+                        seen.add(pid)
+                        pins.append(_pin_from_browser_dict(d))
+                    log.info("[full] scroll %d/%d — %d pins so far", i + 1, scrolls, len(pins))
+                    await page.evaluate("window.scrollBy(0, window.innerHeight * 0.9)")
+                    await asyncio.sleep(settings.scroll_pause_s)
+        except Exception as exc:
+            # مهما فشل (timeout نهائي بعد إعادة المحاولات، تحدي لم يُحل، إلخ) —
+            # نرجع ScrapeResult منظّم بدل ما نكسر الطلب بالكامل بـ exception
+            # غير معالج، ونحتفظ بأي صور جُمعت قبل الفشل (أفضل من لا شيء).
+            log.error("full scrape failed for %s: %s", url, exc)
+            return ScrapeResult(
+                url=url,
+                pins=pins,
+                graphql_responses=graphql_data,
+                mode="full",
+                error=str(exc),
             )
 
-            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            # Wait for either blueprint cards OR pin anchors to appear
-            try:
-                await page.wait_for_selector(
-                    ".ADXRXN, a[href*='/pin/']", timeout=15_000
-                )
-            except Exception:
-                log.warning("No pin cards found on %s within timeout", url)
-
-            for i in range(scrolls):
-                raw = await page.evaluate(EXTRACT_JS)
-                for d in raw:
-                    pid = d.get("id")
-                    if not pid or pid in seen:
-                        continue
-                    seen.add(pid)
-                    pins.append(_pin_from_browser_dict(d))
-                log.info("[full] scroll %d/%d — %d pins so far", i + 1, scrolls, len(pins))
-                await page.evaluate("window.scrollBy(0, window.innerHeight * 0.9)")
-                await asyncio.sleep(settings.scroll_pause_s)
-
-        title = ""
-        if pins:
-            title = ""
         return ScrapeResult(
             url=url,
-            title=title,
+            title="",
             pins=pins,
             graphql_responses=graphql_data,
             mode="full",
@@ -374,17 +391,22 @@ class PinterestScraper:
 
     async def _scrape_full_profile(self, username: str) -> Profile:
         assert self._browser is not None
-        async with self._browser.page() as page:
-            await page.goto(
-                f"{BASE_URL}/{username}/", wait_until="domcontentloaded", timeout=30_000
-            )
-            try:
-                await page.wait_for_selector(
-                    ".ADXRXN, a[href*='/pin/']", timeout=15_000
+        try:
+            async with self._browser.page() as page:
+                await goto_with_retry(
+                    page, f"{BASE_URL}/{username}/", timeout=30_000, retries=2
                 )
-            except Exception:
-                pass
-            data = await page.evaluate(EXTRACT_PROFILE_JS, username)
+                await wait_for_challenge_to_clear(page, max_wait_s=20.0)
+                try:
+                    await page.wait_for_selector(
+                        ".ADXRXN, a[href*='/pin/']", timeout=15_000
+                    )
+                except Exception:
+                    pass
+                data = await page.evaluate(EXTRACT_PROFILE_JS, username)
+        except Exception as exc:
+            log.error("full profile scrape failed for %s: %s", username, exc)
+            return Profile(username=username, title=username)
         boards = [Board(**b) for b in data.get("boards", [])]
         pins = [_pin_from_browser_dict(p) for p in data.get("pins", [])]
         return Profile(
