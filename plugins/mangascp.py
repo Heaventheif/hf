@@ -8,7 +8,8 @@ Manga-Lionz (Madara-based WordPress) scraper plugin for Sunken Bot API.
 
     1) curl_cffi       — أسرع طبقة (TLS fingerprint لمتصفّح حقيقي).
     2) cloudscraper    — يحلّ تحدّي JS الخفيف في Cloudflare.
-    3) playwright      — مع stealth، للـ challenges التفاعلية ("I'm human").
+    3) browser_engine  — متصفح anti-detection حقيقي (nodriver + curl_cffi)،
+                          للـ challenges التفاعلية ("I'm human").
 
 كل الـ imports داخلية — هذا الملف self-contained كما يتطلّب plugin_loader.
 
@@ -44,7 +45,7 @@ from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # Optional dependencies — كلها قد تكون موجودة في requirements الجذر.
-# نتجنّب الاستيراد على مستوى الموديول للأشياء الثقيلة (playwright)
+# نتجنّب الاستيراد على مستوى الموديول للأشياء الثقيلة (browser_engine/nodriver)
 # حتى لا نفشل التحميل لو غير مثبّتة.
 # ---------------------------------------------------------------------------
 try:
@@ -60,19 +61,21 @@ except Exception:  # pragma: no cover
     _HAS_CLOUDSCRAPER = False
 
 try:
-    # نُعيد استخدام BrowserManager الجاهز من scraper/browser.py (يستخدمه pinterest.py
-    # أيضاً) بدل تكرار منطق تشغيل Chromium من الصفر.
-    from scraper.browser import BrowserManager  # type: ignore
-    _HAS_PLAYWRIGHT = True
+    # نستخدم AntiDetectionBrowser من browser_engine.py (nodriver + curl_cffi)
+    # بدل BrowserManager القديم (Playwright خام بلا حماية ضد كشف الأتمتة).
+    # نفس مبدأ الاستخدام في نموذج_اوامر.py: متصفح واحد طويل العمر، يُستدعى
+    # عبر visit() لكل رابط، ويحل تحديات Cloudflare تلقائياً.
+    from browser_engine import AntiDetectionBrowser  # type: ignore
+    _HAS_BROWSER_ENGINE = True
 except Exception:  # pragma: no cover
-    _HAS_PLAYWRIGHT = False
+    _HAS_BROWSER_ENGINE = False
 
 
 # ===========================================================================
 # Plugin metadata (يقرأها plugin_loader)
 # ===========================================================================
 DESCRIPTION = "Manga-Lionz / Madara scraper مع تجاوز Cloudflare متعدد الطبقات"
-DOCKERFILE_DEPS: List[str] = []  # لا حزم apt إضافية — playwright يأتي جاهزاً
+DOCKERFILE_DEPS: List[str] = []  # لا حزم apt إضافية — Chromium يأتي جاهزاً عبر playwright install
 
 
 # ===========================================================================
@@ -174,7 +177,7 @@ _cache = TTLCache()
 # ===========================================================================
 # طبقة تجاوز Cloudflare (waterfall: curl_cffi → cloudscraper → raw httpx)
 # ---------------------------------------------------------------------------
-# ملاحظة: playwright layer يمكن تفعيله لاحقاً عند الحاجة (يُكلّف بطيء).
+# ملاحظة: طبقة browser_engine يمكن تفعيلها لاحقاً عند الحاجة (تُكلّف بطيء).
 # ===========================================================================
 @dataclass
 class FetchResult:
@@ -182,7 +185,7 @@ class FetchResult:
     status: int
     text: str
     final_url: str
-    strategy: str  # "cffi" | "cloudscraper" | "httpx" | "playwright" | "cache"
+    strategy: str  # "cffi" | "cloudscraper" | "httpx" | "browser_engine" | "cache"
 
 
 class CloudflareBypass:
@@ -200,7 +203,7 @@ class CloudflareBypass:
 
     def __init__(self) -> None:
         self._cs_scraper: Optional[Any] = None  # cloudscraper instance
-        self._browser: Optional["BrowserManager"] = None  # playwright — lazy singleton
+        self._browser: Optional["AntiDetectionBrowser"] = None  # browser_engine — lazy singleton
         self._browser_lock = asyncio.Lock()
         self._lock = asyncio.Lock()
         self._last_request_at = 0.0
@@ -296,58 +299,50 @@ class CloudflareBypass:
         except Exception as exc:  # pragma: no cover
             return FetchResult(False, 0, f"cloudscraper-error: {exc}", url, "cloudscraper")
 
-    async def _get_browser(self) -> Optional["BrowserManager"]:
-        """يشغّل Chromium مرة واحدة فقط ويشاركه بين كل الطلبات."""
-        if not _HAS_PLAYWRIGHT:
+    async def _get_browser(self) -> Optional["AntiDetectionBrowser"]:
+        """يشغّل متصفح anti-detection (browser_engine) مرة واحدة فقط ويشاركه بين كل الطلبات."""
+        if not _HAS_BROWSER_ENGINE:
             return None
         if self._browser is None:
             async with self._browser_lock:
                 if self._browser is None:  # تحقق ثانٍ بعد أخذ القفل
-                    b = BrowserManager()
+                    b = AntiDetectionBrowser(headless=True)
                     await b.start()
                     self._browser = b
         return self._browser
 
-    async def _try_playwright(self, url: str) -> FetchResult:
-        """الطبقة الثالثة — متصفح Chromium حقيقي عبر Playwright.
+    async def _try_browser_engine(self, url: str) -> FetchResult:
+        """الطبقة الثالثة — متصفح حقيقي عبر browser_engine (nodriver + curl_cffi).
 
         هذه هي الطبقة الوحيدة القادرة على حل تحديات Cloudflare التفاعلية
         ("Just a moment..." / "Verify you are human") لأنها تُنفّذ الجافاسكربت
-        فعلياً بدل تقليد بصمة TLS فقط (على عكس curl_cffi وcloudscraper).
+        فعلياً بدل تقليد بصمة TLS فقط (على عكس curl_cffi وcloudscraper)، مع
+        حماية إضافية ضد كشف الأتمتة (nodriver) مقارنةً بـ Playwright الخام.
+        AntiDetectionBrowser.visit() يتكفّل داخلياً بانتظار حل التحدي والتفاعل
+        البشري المحاكى، فلا حاجة هنا لإعادة تنفيذ حلقة الانتظار يدوياً.
         """
-        if not _HAS_PLAYWRIGHT:
-            return FetchResult(False, 0, "", url, "playwright")
+        if not _HAS_BROWSER_ENGINE:
+            return FetchResult(False, 0, "", url, "browser_engine")
         try:
             browser = await self._get_browser()
             if browser is None:
-                return FetchResult(False, 0, "", url, "playwright")
+                return FetchResult(False, 0, "", url, "browser_engine")
 
-            async with browser.page() as page:
-                resp = await page.goto(url, wait_until="domcontentloaded", timeout=REQUEST_TIMEOUT * 1000)
-                status = resp.status if resp else 0
-
-                # انتظر اختفاء تحدي Cloudflare (يتحول تلقائياً عادة خلال 3-6 ثواني)
-                for _ in range(10):
-                    html = await page.content()
-                    if not self._looks_like_cf_challenge(html, status if status else 403):
-                        break
-                    await page.wait_for_timeout(1000)
-                else:
-                    html = await page.content()
-
-                final_status = status or (200 if html else 0)
-                ok = bool(html) and not self._looks_like_cf_challenge(
-                    html, final_status if final_status else 403
-                )
-                return FetchResult(
-                    ok=ok,
-                    status=final_status,
-                    text=html,
-                    final_url=page.url,
-                    strategy="playwright",
-                )
+            html = await browser.visit(url, timeout=REQUEST_TIMEOUT)
+            final_url = getattr(browser.page, "url", None) or url
+            status = 200 if html else 0
+            ok = bool(html) and not self._looks_like_cf_challenge(
+                html, status if status else 403
+            )
+            return FetchResult(
+                ok=ok,
+                status=status,
+                text=html or "",
+                final_url=final_url,
+                strategy="browser_engine",
+            )
         except Exception as exc:  # pragma: no cover
-            return FetchResult(False, 0, f"playwright-error: {exc}", url, "playwright")
+            return FetchResult(False, 0, f"browser_engine-error: {exc}", url, "browser_engine")
 
     async def _try_httpx(self, url: str) -> FetchResult:
         try:
@@ -373,7 +368,7 @@ class CloudflareBypass:
 
     # ---------- الـ API الموحّدة ----------
     async def get(self, url: str, use_cache: bool = True) -> FetchResult:
-        """يجلب URL مع تجاوز CF. waterfall: cffi → cloudscraper → playwright → httpx."""
+        """يجلب URL مع تجاوز CF. waterfall: cffi → cloudscraper → browser_engine → httpx."""
         if use_cache:
             cached = _cache.get(f"get::{url}")
             if cached is not None:
@@ -400,10 +395,11 @@ class CloudflareBypass:
                     _cache.set(f"get::{url}", result2.text, ttl=120)
                 return result2
 
-        # 3) playwright (متصفح حقيقي — يحلّ تحديات "Just a moment" التفاعلية
-        #    التي لا يقدر cffi ولا cloudscraper على حلها لأنها تتطلب تنفيذ JS فعلي)
-        if _HAS_PLAYWRIGHT:
-            result3 = await self._try_playwright(url)
+        # 3) browser_engine (متصفح anti-detection حقيقي — يحلّ تحديات "Just a
+        #    moment" التفاعلية التي لا يقدر cffi ولا cloudscraper على حلها لأنها
+        #    تتطلب تنفيذ JS فعلي)
+        if _HAS_BROWSER_ENGINE:
+            result3 = await self._try_browser_engine(url)
             last_result = result3
             if result3.ok:
                 if use_cache:
@@ -921,7 +917,7 @@ def register(app):  # noqa: C901 — accepts FastAPI app
             "layers": {
                 "curl_cffi": _HAS_CFFI,
                 "cloudscraper": _HAS_CLOUDSCRAPER,
-                "playwright": _HAS_PLAYWRIGHT,
+                "browser_engine": _HAS_BROWSER_ENGINE,
             },
         }
 
