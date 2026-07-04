@@ -186,6 +186,9 @@ class FetchResult:
     text: str
     final_url: str
     strategy: str  # "cffi" | "cloudscraper" | "httpx" | "browser_engine" | "cache"
+    # سجل كل الطبقات التي جُرِّبت فعلياً قبل الوصول لهذه النتيجة (للتشخيص فقط،
+    # يبقى فارغاً في حالات النجاح من أول محاولة أو من الكاش).
+    attempts: Optional[List[Dict[str, Any]]] = None
 
 
 class CloudflareBypass:
@@ -376,11 +379,21 @@ class CloudflareBypass:
 
         await self._throttle()
 
-        last_result: Optional[FetchResult] = None
+        attempts: List[Dict[str, Any]] = []
+
+        def record(r: FetchResult) -> FetchResult:
+            attempts.append(
+                {
+                    "strategy": r.strategy,
+                    "status": r.status,
+                    "ok": r.ok,
+                    "snippet": (r.text or "")[:200],
+                }
+            )
+            return r
 
         # 1) curl_cffi (الأسرع والأقوى عادةً)
-        result = await asyncio.to_thread(self._try_cffi, url)
-        last_result = result
+        result = record(await asyncio.to_thread(self._try_cffi, url))
         if result.ok:
             if use_cache:
                 _cache.set(f"get::{url}", result.text, ttl=120)
@@ -388,8 +401,7 @@ class CloudflareBypass:
 
         # 2) cloudscraper (حلّ JS challenges الخفيفة)
         if _HAS_CLOUDSCRAPER:
-            result2 = await asyncio.to_thread(self._try_cloudscraper, url)
-            last_result = result2
+            result2 = record(await asyncio.to_thread(self._try_cloudscraper, url))
             if result2.ok:
                 if use_cache:
                     _cache.set(f"get::{url}", result2.text, ttl=120)
@@ -399,8 +411,7 @@ class CloudflareBypass:
         #    moment" التفاعلية التي لا يقدر cffi ولا cloudscraper على حلها لأنها
         #    تتطلب تنفيذ JS فعلي)
         if _HAS_BROWSER_ENGINE:
-            result3 = await self._try_browser_engine(url)
-            last_result = result3
+            result3 = record(await self._try_browser_engine(url))
             if result3.ok:
                 if use_cache:
                     _cache.set(f"get::{url}", result3.text, ttl=120)
@@ -408,16 +419,31 @@ class CloudflareBypass:
 
         # 4) httpx عادي — ملاذ أخير بلا أي تجاوز حماية، قد ينجح فقط لو
         #    الـ challenge كان مؤقتاً أو غاب عن هذا الطلب بالذات.
-        result4 = await self._try_httpx(url)
-        last_result = result4
+        result4 = record(await self._try_httpx(url))
         if result4.ok:
             if use_cache:
                 _cache.set(f"get::{url}", result4.text, ttl=120)
             return result4
 
-        # فشل كامل — نُرجع آخر محاولة فعلياً حصلت (وليس دائماً محاولة cffi
-        # الأولى) حتى يعكس حقل "strategy" الطبقة التي فشلت فعلياً في الأخير.
-        return last_result if last_result is not None else result
+        # فشل كامل. المشكلة القديمة: كان يُرجَع "httpx" دائماً كـ strategy لأنه
+        # آخر طبقة تُجرَّب بغض النظر عن نتيجتها، فيخفي أن browser_engine (الطبقة
+        # الأقوى) هي التي فشلت فعلياً بمشكلة مختلفة (Chromium غير مثبّت مثلاً).
+        # الحل: نُفضّل عرض أعلى طبقة فعلياً حاولت (browser_engine أولاً، ثم
+        # cloudscraper، ثم cffi، وأخيراً httpx فقط لو لم يُجرَّب غيره)، ونُرفق
+        # قائمة كل المحاولات كاملة في "attempts" للتشخيص الفوري بلا تخمين.
+        priority = ["browser_engine", "cloudscraper", "cffi", "httpx"]
+        chosen: Optional[Dict[str, Any]] = None
+        for strat in priority:
+            chosen = next((a for a in attempts if a["strategy"] == strat), None)
+            if chosen is not None:
+                break
+
+        final = result4  # نحتفظ بنص/رابط آخر استجابة فعلية وصلتنا من الشبكة
+        if chosen is not None:
+            final.strategy = chosen["strategy"]
+            final.status = chosen["status"] or final.status
+        final.attempts = attempts
+        return final
 
     async def post(self, url: str, data: Dict[str, str]) -> FetchResult:
         """POST مع تجاوز CF (مُحسَّن لطلبات WordPress AJAX)."""
@@ -703,6 +729,7 @@ class MangaScraper:
                     "status": result.status,
                     "strategy": result.strategy,
                     "snippet": (result.text or "")[:300],
+                    "attempts": result.attempts,
                 },
             )
 
@@ -768,6 +795,7 @@ class MangaScraper:
                     "status": result.status,
                     "strategy": result.strategy,
                     "snippet": (result.text or "")[:300],
+                    "attempts": result.attempts,
                 },
             )
 
@@ -915,10 +943,17 @@ def register(app):  # noqa: C901 — accepts FastAPI app
             "strategy": result.strategy,
             "title_hint": _quick_title(result.text) if result.ok else "",
             "layers": {
-                "curl_cffi": _HAS_CFFI,
-                "cloudscraper": _HAS_CLOUDSCRAPER,
-                "browser_engine": _HAS_BROWSER_ENGINE,
+                # "imported": نجح استيراد المكتبة عند تشغيل السيرفر (لا يعني أنها تعمل فعلياً).
+                "curl_cffi_imported": _HAS_CFFI,
+                "cloudscraper_imported": _HAS_CLOUDSCRAPER,
+                "browser_engine_imported": _HAS_BROWSER_ENGINE,
             },
+            # كل طبقة جُرِّبت فعلياً بهذا الفحص، بترتيب المحاولة، مع status/ok
+            # لكل واحدة — هذا يبيّن أي طبقة نجحت أو فشلت فعلياً وليس فقط
+            # هل هي "مستوردة" بنجاح.
+            "attempts": result.attempts or [
+                {"strategy": result.strategy, "status": result.status, "ok": result.ok}
+            ],
         }
 
     @app.post("/mangascp/search")
