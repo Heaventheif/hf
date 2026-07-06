@@ -17,6 +17,13 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger("novel")
 DESCRIPTION = "جلب فصول الروايات من freewebnovel.com"
 
+# ─── Shared HTTP client (connection pooling) — نفس نمط باقي الـ plugins.
+# قبل هذا كان fetch_page_http ينشئ عميل httpx جديد بكل استدعاء.
+_http = httpx.AsyncClient(
+    limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+    follow_redirects=True,
+)
+
 # ─── Cache ─────────────────────────────────────────────────────
 _cache: dict = {}
 CACHE_TTL = 3600
@@ -155,24 +162,23 @@ def extract_title(html: str, selectors: list[str]) -> str:
 
 # ─── طلب HTTP عادي ────────────────────────────────────────────
 async def fetch_page_http(url: str, timeout: int = 30, retries: int = 2) -> Optional[str]:
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        for attempt in range(retries + 1):
-            try:
-                resp = await client.get(url, headers=HEADERS())
-                if resp.status_code == 200 and len(resp.text) > 500:
-                    lower = resp.text[:3000].lower()
-                    if "just a moment" in lower or "cloudflare" in lower:
-                        logger.warning(f"Cloudflare على {url}")
-                        break
-                    return resp.text
-            except httpx.TimeoutException:
-                if attempt == retries:
-                    logger.warning(f"Timeout بعد {retries} محاولات: {url}")
-            except Exception as e:
-                if attempt == retries:
-                    logger.warning(f"فشل جلب {url}: {e}")
-            await asyncio.sleep(1)
-        return None
+    for attempt in range(retries + 1):
+        try:
+            resp = await _http.get(url, headers=HEADERS(), timeout=timeout)
+            if resp.status_code == 200 and len(resp.text) > 500:
+                lower = resp.text[:3000].lower()
+                if "just a moment" in lower or "cloudflare" in lower:
+                    logger.warning(f"Cloudflare على {url}")
+                    break
+                return resp.text
+        except httpx.TimeoutException:
+            if attempt == retries:
+                logger.warning(f"Timeout بعد {retries} محاولات: {url}")
+        except Exception as e:
+            if attempt == retries:
+                logger.warning(f"فشل جلب {url}: {e}")
+        await asyncio.sleep(1)
+    return None
 
 # ─── طلب باستخدام Playwright ──────────────────────────────────
 async def fetch_page_playwright(url: str, wait_sel: str = None, timeout: int = 45000) -> Optional[str]:

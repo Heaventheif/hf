@@ -173,12 +173,19 @@ async def _groq_audio(audio_raw: bytes, mime: str, prompt: str) -> str:
 async def _process_video(url: str, prompt: str, messages: list) -> str:
     try:
         import subprocess, tempfile, os as _os
+        from fastapi.concurrency import run_in_threadpool
         raw, _ = await _fetch_base64(url)
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
             f.write(raw)
             vid_path = f.name
         frame_path = vid_path.replace(".mp4", "_frame.jpg")
-        proc = subprocess.run(
+        # ← إصلاح: subprocess.run كان يُستدعى مباشرة داخل async def، وبما
+        # إن ffmpeg ممكن ياخذ لغاية 30 ثانية (نفس قيمة الـ timeout)، كان
+        # يجمّد الـ event loop الوحيد بالسيرفر بالكامل بهالمدة — أي طلب
+        # تاني (pin/gemini/chess/حتى /health) يتوقف تماماً لحد ما ffmpeg
+        # يخلص. تشغيله بـ threadpool يخلي باقي الطلبات تكمل بالتوازي.
+        proc = await run_in_threadpool(
+            subprocess.run,
             ["ffmpeg", "-i", vid_path, "-ss", "00:00:01", "-vframes", "1", "-q:v", "2", frame_path, "-y"],
             capture_output=True, timeout=30
         )

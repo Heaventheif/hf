@@ -38,6 +38,14 @@ from pydantic import BaseModel, Field
 DESCRIPTION = "بحث وتحميل صور عالية الدقة من Pinterest (Playwright + Ferdev fallback)"
 DOCKERFILE_DEPS: list = []  # Playwright already installed by base Dockerfile
 
+# ─── Shared HTTP client (connection pooling) — نفس نمط fb.py/gemini.py/groq.py.
+# قبل هذا كان كل استدعاء لـ _ferdev_search أو لتشفير base64 ينشئ عميل httpx
+# جديد (اتصال TCP+TLS جديد بالكامل) بدل إعادة استخدام اتصال keep-alive.
+_http = httpx.AsyncClient(
+    timeout=30,
+    limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+)
+
 # Lazy-initialised scraper singleton (one per worker process).
 _scraper_state: dict = {}
 
@@ -161,12 +169,11 @@ async def _ferdev_search(query: str, limit: int, api_key: str) -> List[ImageResu
     if not api_key:
         return []
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(
-                "https://api.ferdev.my.id/search/pinterest",
-                params={"query": query, "apikey": api_key, "limit": limit},
-            )
-            data = r.json()
+        r = await _http.get(
+            "https://api.ferdev.my.id/search/pinterest",
+            params={"query": query, "apikey": api_key, "limit": limit},
+        )
+        data = r.json()
         results = data.get("result") or data.get("data") or data.get("results") or []
         out: List[ImageResult] = []
         for i, item in enumerate(results[:limit]):
@@ -247,21 +254,25 @@ def register(app):
 
         # ---- 3. Optional base64 encoding ----
         if req.as_base64 and images:
-            async with httpx.AsyncClient(timeout=30) as client:
-                for img in images:
-                    try:
-                        r = await client.get(img.url, timeout=20)
-                        if r.status_code == 200:
-                            import base64
-                            b64 = base64.b64encode(r.content).decode("ascii")
-                            mime = "image/jpeg"
-                            if img.url.lower().endswith(".png"):
-                                mime = "image/png"
-                            elif img.url.lower().endswith(".webp"):
-                                mime = "image/webp"
-                            img.thumbnail = f"data:{mime};base64,{b64[:120]}..."
-                    except Exception:
-                        pass
+            async def _encode(img: ImageResult) -> None:
+                try:
+                    r = await _http.get(img.url, timeout=20)
+                    if r.status_code == 200:
+                        import base64
+                        b64 = base64.b64encode(r.content).decode("ascii")
+                        mime = "image/jpeg"
+                        if img.url.lower().endswith(".png"):
+                            mime = "image/png"
+                        elif img.url.lower().endswith(".webp"):
+                            mime = "image/webp"
+                        img.thumbnail = f"data:{mime};base64,{b64[:120]}..."
+                except Exception:
+                    pass
+
+            # ← تشغيل التحميلات بالتوازي بدل واحدة تلو الأخرى — نفس المبدأ
+            # اللي طبّقناه بـ pin.js (DOWNLOAD_CONCURRENCY)، وهون أسهل لأنها
+            # على الأغلب أقل من 20 صورة بكل مرة (req.limit ≤ 20).
+            await asyncio.gather(*(_encode(img) for img in images))
 
         if not images and not err:
             err = "no images found"
