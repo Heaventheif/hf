@@ -2,9 +2,10 @@
 plugins/fb.py
 endpoint: POST /fb
 """
-import httpx, base64, re
+import httpx, base64, re, subprocess, tempfile, os
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from fastapi.concurrency import run_in_threadpool
 
 DESCRIPTION = "تحميل فيديوهات فيسبوك"
 
@@ -86,7 +87,12 @@ def _is_facebook_video_url(url: str) -> bool:
     return False
 
 
-async def _get_video_url(fb_url: str, quality: str) -> dict:
+async def _get_video_candidates(fb_url: str, quality: str) -> dict:
+    """يرجّع كل روابط الفيديو المرشّحة (مش رابط واحد بس) بترتيب الأولوية:
+    download_url أولاً، ثم كل available_formats. بعض هالصيغ (خصوصاً جودة
+    "worst"/المنخفضة) تكون فيديو بدون صوت من خدمة التحميل نفسها — فبدل
+    الاكتفاء بأول رابط، نجرّبهم بالترتيب لحد ما نلاقي واحد فيه صوت فعلاً.
+    """
     r = await _http.post(
         f"{FDOWN}/download",
         json={"url": fb_url, "quality": quality},
@@ -94,10 +100,76 @@ async def _get_video_url(fb_url: str, quality: str) -> dict:
     )
     r.raise_for_status()
     data = r.json()
+
+    urls: list[str] = []
+    if data.get("download_url"):
+        urls.append(data["download_url"])
+    for fmt in (data.get("available_formats") or []):
+        u = fmt.get("url")
+        if u and u not in urls:
+            urls.append(u)
+
     return {
-        "video_url": data.get("download_url") or (data.get("available_formats") or [{}])[0].get("url"),
-        "title":     data.get("video_info", {}).get("title", "فيديو فيسبوك"),
+        "video_urls": urls,
+        "title": data.get("video_info", {}).get("title", "فيديو فيسبوك"),
     }
+
+
+def _has_audio_stream_sync(file_path: str) -> bool:
+    """يتحقق (عبر ffprobe) هل الملف فيه مسار صوت فعلي أم لا."""
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=index", "-of", "csv=p=0", file_path],
+            capture_output=True, timeout=15, text=True,
+        )
+        return bool(proc.stdout.strip())
+    except Exception:
+        # لو ffprobe نفسه فشل (غير مثبت مثلاً)، ما نمنع الإرسال — نفترض OK
+        # بدل ما نكسر الميزة بالكامل بسبب فحص إضافي فشل.
+        return True
+
+
+async def _has_audio_stream(content: bytes) -> bool:
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+        f.write(content)
+        path = f.name
+    try:
+        return await run_in_threadpool(_has_audio_stream_sync, path)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+async def _download_with_audio(fb_url: str, quality: str) -> "tuple[bytes, str] | None":
+    """يجرّب كل الروابط المرشّحة لجودة معيّنة، ويرجع أول واحد ينزّل بنجاح
+    *وفيه صوت فعلاً*. يرجع None لو ولا واحد نجح/فيه صوت."""
+    try:
+        cand = await _get_video_candidates(fb_url, quality)
+    except Exception:
+        return None
+
+    title = cand["title"]
+    fallback_silent: "tuple[bytes, str] | None" = None  # آخر ملجأ لو ولا فيديو فيه صوت
+
+    for video_url in cand["video_urls"]:
+        try:
+            dl = await _http_dl.get(video_url)
+            dl.raise_for_status()
+            content = dl.content
+        except Exception:
+            continue
+        if not content or len(content) > MAX_BYTES:
+            continue
+
+        if await _has_audio_stream(content):
+            return content, title
+        elif fallback_silent is None:
+            fallback_silent = (content, title)  # نحتفظ فيه احتياط لو كل الخيارات بدون صوت
+
+    return fallback_silent
 
 
 def register(app):
@@ -126,56 +198,20 @@ def register(app):
                              "(لا يدعم المنشورات أو الصور أو روابط البروفايل)"
                 }, status_code=400)
 
-            # جرب الجودة المطلوبة ثم worst كـ fallback
+            # جرب الجودة المطلوبة ثم worst كـ fallback — كل واحدة تجرّب
+            # كل الروابط المرشّحة وتتحقق من وجود صوت فعلي (ffprobe) قبل
+            # القبول، بدل الاكتفاء بأول رابط ترجعه الخدمة الخارجية.
             qualities  = [quality, "worst"] if quality != "worst" else ["worst"]
-            result     = None
-            last_error = None
+            content    = None
+            title      = None
             for q in qualities:
-                try:
-                    r = await _get_video_url(fb_url, q)
-                    if r["video_url"]:
-                        result = r
-                        break
-                except Exception as e:
-                    last_error = e
-                    continue
-
-            if not result or not result["video_url"]:
-                if last_error is not None:
-                    # فشل من جهة الخدمة الخارجية (خطأ شبكة/استجابة غير متوقعة) — ليس 404 حقيقياً
-                    return JSONResponse({
-                        "error": f"فشل الاتصال بخدمة التحميل: {str(last_error)[:200]}"
-                    }, status_code=502)
-                return JSONResponse({"error": "لم يُعثر على الفيديو"}, status_code=404)
-
-            video_url = result["video_url"]
-            title     = result["title"]
-
-            # حاول تحميل الفيديو
-            dl = await _http_dl.get(video_url)
-            dl.raise_for_status()
-            content = dl.content
+                result = await _download_with_audio(fb_url, q)
+                if result:
+                    content, title = result
+                    break
 
             if not content:
-                return JSONResponse({"error": "الملف فارغ"}, status_code=502)
-
-            if len(content) > MAX_BYTES:
-                # حاول بجودة أقل إذا لم نكن عليها
-                if quality != "worst":
-                    try:
-                        r2 = await _get_video_url(fb_url, "worst")
-                        if r2["video_url"]:
-                            dl2 = await _http_dl.get(r2["video_url"])
-                            content2 = dl2.content
-                            if content2 and len(content2) <= MAX_BYTES:
-                                return JSONResponse({
-                                    "video_b64": base64.b64encode(content2).decode(),
-                                    "title":     title,
-                                    "size":      len(content2),
-                                })
-                    except Exception:
-                        pass
-                return JSONResponse({"error": "الفيديو أكبر من 25MB"}, status_code=413)
+                return JSONResponse({"error": "لم يُعثر على الفيديو"}, status_code=404)
 
             return JSONResponse({
                 "video_b64": base64.b64encode(content).decode(),
