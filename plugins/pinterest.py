@@ -119,13 +119,30 @@ async def _get_scraper():
     return _scraper_state["scraper"]
 
 
+_THUMB_SIZE_RE = re.compile(r"https://i\.pinimg\.com/(?:\d+x|originals|736x|474x|236x)/")
+
+
 def _pin_to_image(pin, quality: str) -> Optional[ImageResult]:
     if not pin or not getattr(pin, "image", None):
         return None
     img = pin.image or {}
-    url = img.get("original") or img.get("src")
+    original = img.get("original")
+    src = img.get("src")
+    url = original or src
     if not url:
         return None
+
+    if not original and src:
+        # لا يوجد رابط "original" حقيقي (الـ srcset لسّه ما تحمّل — شائع
+        # مع Pinterest's lazy loading). قبل هذا الإصلاح كنا نرسل الـ
+        # thumbnail الصغير (src) للمستخدم بصمت وكأنه الصورة الحقيقية،
+        # فتوصل صورة رديئة الجودة بلا أي تنبيه. الآن نحاول ترقيتها
+        # لصيغة /originals/ (متوفّرة لأغلب الـ pins حتى لو الصفحة ما
+        # كشفت رابط الجودة العالية بالـ srcset). هذا تخمين قائم على نمط
+        # روابط Pinterest المعروف وليس مضموناً 100% — إن فشل (404)، خط
+        # التحقق من الصورة بجانب المُستقبل (pin.js) سيتجاهله بدل إرساله.
+        url = _THUMB_SIZE_RE.sub("https://i.pinimg.com/originals/", src)
+
     return ImageResult(
         id=pin.id,
         url=_convert_quality(url, quality),
