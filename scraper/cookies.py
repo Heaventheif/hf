@@ -35,59 +35,82 @@ def _is_pinterest_domain(domain: str) -> bool:
     return d == PINTEREST_SUFFIX or d.endswith("." + PINTEREST_SUFFIX)
 
 
-def load_pinterest_cookies(path: Optional[str] = None) -> List[PlaywrightCookie]:
-    """يقرأ ملف كوكيز Netscape ويرجّع قائمة كوكيز pinterest.com فقط،
-    بصيغة جاهزة لـ Playwright's ``context.add_cookies()``.
-
-    لا يرمي استثناء لو الملف غير موجود — يرجّع قائمة فارغة ويسجّل تحذير،
-    حتى لا يكسر تشغيل السكربر لو نسي أحد رفع الملف.
-    """
-    path = path or os.getenv("SCRAPER_COOKIES_FILE", "cookies.txt")
-    if not path or not os.path.isfile(path):
-        log.warning("[cookies] ملف الكوكيز غير موجود: %s — سيعمل السكربر بدون تسجيل دخول", path)
-        return []
-
+def _parse_netscape_cookies(text: str) -> List[PlaywrightCookie]:
+    """يحلّل نص كوكيز بصيغة Netscape (من ملف أو من متغير بيئة) ويرجّع
+    كوكيز pinterest.com فقط، جاهزة لـ Playwright's ``context.add_cookies()``."""
     cookies: List[PlaywrightCookie] = []
     now = time.time()
     seen: set[tuple[str, str, str]] = set()
 
+    for line in text.splitlines():
+        line = line.rstrip("\n")
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) != 7:
+            continue
+        domain, _include_sub, cpath, secure_flag, expires_raw, name, value = parts
+        if not _is_pinterest_domain(domain):
+            continue
+
+        try:
+            expires = float(expires_raw)
+        except ValueError:
+            expires = 0.0
+        # كوكيز منتهية الصلاحية لا فائدة منها — نتجاهلها.
+        if expires and expires < now:
+            continue
+
+        key = (domain, cpath, name)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        cookie: PlaywrightCookie = {
+            "name": name,
+            "value": value,
+            "domain": domain if domain.startswith(".") else domain,
+            "path": cpath or "/",
+            "secure": secure_flag.upper() == "TRUE",
+        }
+        if expires:
+            cookie["expires"] = expires
+        cookies.append(cookie)
+
+    return cookies
+
+
+def load_pinterest_cookies(path: Optional[str] = None) -> List[PlaywrightCookie]:
+    """يرجّع كوكيز pinterest.com فقط، جاهزة لـ Playwright's ``context.add_cookies()``.
+
+    الأولوية دائماً لمتغير البيئة ``PINTEREST_COOKIES`` (نص كوكيز Netscape
+    كامل، يُضبط كـ Secret بإعدادات الـ Space) — هذا يمنع الحاجة لرفع أي
+    كوكيز حقيقية كملف بالمستودع. لو المتغير غير مضبوط، يرجع (للتوافق
+    الخلفي بالتطوير المحلي فقط) لقراءة ملف ``cookies.txt`` (أو المسار
+    المُعطى/`SCRAPER_COOKIES_FILE`) إن وُجد.
+
+    لا يرمي استثناء في أي من الحالتين — يرجّع قائمة فارغة ويسجّل تحذير،
+    حتى لا يكسر تشغيل السكربر لو نسي أحد ضبط الكوكيز.
+    """
+    env_cookies_text = os.getenv("PINTEREST_COOKIES", "").strip()
+    if env_cookies_text:
+        cookies = _parse_netscape_cookies(env_cookies_text)
+        log.info("[cookies] تحميل %d كوكيز pinterest.com من متغير البيئة PINTEREST_COOKIES", len(cookies))
+        return cookies
+
+    path = path or os.getenv("SCRAPER_COOKIES_FILE", "cookies.txt")
+    if not path or not os.path.isfile(path):
+        log.warning(
+            "[cookies] لا يوجد PINTEREST_COOKIES (متغير بيئة) ولا ملف كوكيز: %s — "
+            "سيعمل السكربر بدون تسجيل دخول", path
+        )
+        return []
+
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            line = line.rstrip("\n")
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split("\t")
-            if len(parts) != 7:
-                continue
-            domain, _include_sub, cpath, secure_flag, expires_raw, name, value = parts
-            if not _is_pinterest_domain(domain):
-                continue
+        text = f.read()
 
-            try:
-                expires = float(expires_raw)
-            except ValueError:
-                expires = 0.0
-            # كوكيز منتهية الصلاحية لا فائدة منها — نتجاهلها.
-            if expires and expires < now:
-                continue
-
-            key = (domain, cpath, name)
-            if key in seen:
-                continue
-            seen.add(key)
-
-            cookie: PlaywrightCookie = {
-                "name": name,
-                "value": value,
-                "domain": domain if domain.startswith(".") else domain,
-                "path": cpath or "/",
-                "secure": secure_flag.upper() == "TRUE",
-            }
-            if expires:
-                cookie["expires"] = expires
-            cookies.append(cookie)
-
-    log.info("[cookies] تحميل %d كوكيز pinterest.com من %s", len(cookies), path)
+    cookies = _parse_netscape_cookies(text)
+    log.info("[cookies] تحميل %d كوكيز pinterest.com من الملف المحلي %s (تطوير محلي فقط)", len(cookies), path)
     return cookies
 
 
