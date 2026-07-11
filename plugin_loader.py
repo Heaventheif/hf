@@ -45,9 +45,33 @@ def _register_auth_middleware(app):
         )
         return
 
+    def _path_is_registered(path: str) -> bool:
+        """
+        يتحقق إن كان المسار يطابق أي route مسجّل فعلاً في التطبيق.
+        مسارات غير موجودة (سكانرات، مسارات قديمة/خاطئة) لا داعي لحمايتها
+        بتوكن — نتركها تمر لـ FastAPI ليرجع 404 طبيعي بدل تسجيلها كمحاولة
+        اختراق مرفوضة (401) وتلويث اللوغ.
+        """
+        from starlette.types import Scope
+        scope: Scope = {"type": "http", "path": path, "method": "GET"}
+        for route in app.routes:
+            try:
+                match, _ = route.matches(scope)
+                if match.value != 0:  # NONE == 0
+                    return True
+            except Exception:
+                continue
+        return False
+
     @app.middleware("http")
     async def _internal_token_guard(request: Request, call_next):
         if request.url.path in PUBLIC_PATHS:
+            return await call_next(request)
+
+        if not _path_is_registered(request.url.path):
+            # مسار غير موجود أصلاً — دع FastAPI يرجّع 404 عادي، لا داعي
+            # لتسجيله كطلب "مرفوض" (كان يظهر 401 مضلّل لمسارات مثل
+            # /translate التي لا وجود لها في الكود، بدل 404 الحقيقي)
             return await call_next(request)
 
         supplied = request.headers.get("x-internal-token", "")
@@ -63,7 +87,7 @@ def _register_auth_middleware(app):
 
         return await call_next(request)
 
-    logger.info("🔒 تم تفعيل حماية X-Internal-Token على كل الـ endpoints (عدا / و /health)")
+    logger.info("🔒 تم تفعيل حماية X-Internal-Token على كل الـ endpoints المسجّلة (عدا / و /health)")
 
 # سجل الـ plugins المحمَّلة — يُعرض في /
 _registry: dict = {}
