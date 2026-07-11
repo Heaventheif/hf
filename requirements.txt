@@ -22,3 +22,8 @@ aiofiles>=23.2.1
 tenacity>=8.2.3
 nodriver>=0.0.6
 aiofiles
+pytesseract==0.3.13
+Pillow>=10.0.0
+arabic-reshaper==3.0.1
+python-bidi==0.6.11
+numpy>=1.26.0
