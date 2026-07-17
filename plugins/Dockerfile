@@ -28,15 +28,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
-
-# ملاحظة إصلاح: بدل الاعتماد على go.sum مكتمل مُرفَق مسبقاً (المطوّر هنا
-# بلا وصول لـ terminal/Go toolchain محلياً على خطة HF المجانية، فمقدرش
-# يشغّل go mod tidy بنفسه) — نشغّل go mod tidy هنا داخل مرحلة البناء
-# نفسها، حيث الاتصال بالإنترنت متاح فعلياً (سيرفرات بناء HF). أي حزمة
-# جديدة تُضاف لاستيرادات المشروع (import جديد في أي .go file) بيتوّلد لها
-# سطر go.sum صحيح تلقائياً هنا وقت البناء، بدل فشل "missing go.sum entry".
-RUN go mod tidy
 
 # ملاحظة (من الملف الأصلي، لا تزال سارية بالكامل): سطور "replace" في
 # go.mod التي توجّه go.mongodb.org/mongo-driver وحزم golang.org/x/*

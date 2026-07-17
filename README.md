@@ -1,792 +1,237 @@
 ---
-title: Sunken Bot
-emoji: 🤖
+title: Sunken Bot Go Edition
+emoji: 🐙
 colorFrom: blue
-colorTo: indigo
+colorTo: purple
 sdk: docker
+app_port: 7860
 pinned: false
 ---
-# 🤖 Sunken Bot — Universal Bot API
 
-<div align="center">
+# Sunken Bot — Go Edition
 
-**واجهة برمجية موحّدة متعددة الخدمات مبنية على FastAPI — مُصمَّمة للنشر على Hugging Face Spaces**
+تحويل كامل للمشروع من Python (FastAPI) إلى Go. **كل الـ 8 plugins محوَّلة
+ومبنية ومُختبرة فعلياً** (build حقيقي + تشغيل + طلبات HTTP حقيقية، وبعضها
+باختبارات وحدة تلقائية).
 
-![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python)
-![FastAPI](https://img.shields.io/badge/FastAPI-latest-green?logo=fastapi)
-![Docker](https://img.shields.io/badge/Docker-ready-blue?logo=docker)
-![HuggingFace](https://img.shields.io/badge/HuggingFace-Space-yellow?logo=huggingface)
-![License](https://img.shields.io/badge/License-MIT-lightgrey)
+> **ملاحظة:** كان plugin `fb` موجوداً في نسخة سابقة من هذا الترحيل وتمت
+> إزالته من هذه النسخة (لا يوجد `plugins/fb` ولا أي استيراد له في
+> `main.go`). العدد الحالي 8 plugins محوَّلة من بايثون + `ping` التوضيحي.
 
-</div>
+## نظرة عامة على المعمارية
 
----
-
-## 📋 نظرة عامة
-
-**Sunken Bot** هو خادم API موحَّد يجمع عشرات الخدمات المختلفة تحت سقف واحد: نماذج ذكاء اصطناعي متعددة، تحميل وسائط، قراءة روايات، بحث صور، وغيرها. يعمل النظام على Hugging Face Spaces باستخدام Docker ويُزامَن تلقائياً من GitHub.
-
-المميز في هذا النظام أن بنيته مبنية على نظام **plugins** قابل للتوسعة: أي ميزة جديدة تُضاف بمجرد إضافة ملف Python واحد إلى مجلد `plugins/` دون أي تعديل على الكود الأساسي.
-
----
-
-## 🏗️ بنية المشروع
+الغالبية العظمى من المنطق (HTTP handlers، الجلسات، الكشط النصي، منطق
+الأعمال) هي **Go خالص**. لكن ثلاثة أجزاء تحديداً تحتاج قدرات لا يملكها Go
+بشكل ناضج (متصفح Chromium حقيقي لتجاوز حماية Cloudflare/JS، ومحرّك
+شطرنج + رسم SVG): لهذه الثلاثة فقط، Go يستدعي **سكربت Node.js** كعملية
+فرعية (subprocess) — تماماً بنفس الطريقة التي يستدعي بها `sub` أداة
+`ffmpeg` الخارجية.
 
 ```
-hf-space/
-├── main.py                    # نقطة دخول FastAPI — ثابتة، لا تُعدَّل
-├── plugin_loader.py           # محرك تحميل الـ plugins تلقائياً
-├── proxy_client.py            # عميل HTTP يوجّه الطلبات عبر Cloudflare Worker
-├── Dockerfile                 # صورة Docker للنشر على HF Spaces
-├── requirements.txt           # المكتبات الأساسية
-│
-├── plugins/                   # كل الميزات — أضف ملفاً جديداً وانتهى
-│   ├── cerebras.py            # نموذج Cerebras GPT-OSS (جلسات جماعية)
-│   ├── chess.py               # بوت الشطرنج
-│   ├── fb.py                  # تحميل فيديوهات فيسبوك/ريلز
-│   ├── gemini.py              # Gemini 2.5 Flash مع Google Search Grounding
-│   ├── gptx.py                # GPT-4o عبر GitHub Models + دعم الصور
-│   ├── groq.py                # Llama 4 Scout (نص + صوت + صورة + فيديو)
-│   ├── hf.py                  # HuggingFace Inference API (20+ نموذج)
-│   ├── image.py               # توليد الصور (FLUX / SDXL)
-│   ├── mood_sticker.py        # GIF مناسب لمزاج الأغنية
-│   ├── novel.py               # قراءة الروايات (5 مصادر)
-│   ├── pinterest.py           # بحث صور Pinterest
-│   ├── quran.py               # آيات قرآنية مع التفسير
-│   ├── random.py              # فيديو عشوائي من Tumblr
-│   ├── sing.py                # بحث وتحميل من SoundCloud
-│   └── translate.py           # ترجمة عبر Google Translate
-│
-├── bot_chess/
-│   └── chess_engine.py        # محرك الشطرنج (minimax + evaluation)
-│
-├── scrapers/
-│   └── wtr_lab.py             # كاشط روايات wtr-lab
-│
-└── .github/
-    └── workflows/
-        ├── sync.yml           # مزامنة تلقائية GitHub → HF Space
-        └── keep-alive.yml     # إبقاء الـ Space مستيقظاً يومياً
+┌─────────────┐   subprocess + JSON stdin/stdout    ┌────────────────────┐
+│  Go plugin  │ ──────────────────────────────────▶ │   Node.js script   │
+│ (HTTP layer)│ ◀────────────────────────────────── │ (npm: chess.js,    │
+└─────────────┘                                      │  sharp, playwright)│
+                                                      └────────────────────┘
 ```
 
----
-
-## ⚡ نظام الـ Plugins
-
-### كيف يعمل؟
-
-عند بدء تشغيل الخادم، يقوم `plugin_loader.py` تلقائياً بـ:
-
-1. **اكتشاف** كل ملفات `plugins/*.py`
-2. **تثبيت** متطلبات كل plugin من `plugins/requirements/<name>.txt` (إن وُجد)
-3. **تحميل** الـ module ديناميكياً
-4. **تسجيل** الـ routes على تطبيق FastAPI عبر دالة `register(app)` أو `setup(app)`
-5. **تحديث** `requirements.txt` الجذر و`Dockerfile` تلقائياً بأي متطلبات جديدة
-
-فشل تحميل plugin واحد **لا يوقف** باقي الـ plugins.
-
-### كتابة Plugin جديد
-
-```python
-# plugins/my_feature.py
-
-DESCRIPTION = "وصف مختصر للـ plugin"
-DOCKERFILE_DEPS = ["ffmpeg"]  # اختياري — packages تُضاف لـ apt-get
-
-def register(app):
-
-    @app.get("/my-endpoint")
-    async def my_endpoint():
-        return {"status": "ok"}
-```
-
-هذا كل شيء. أضف الملف وسيُكتشف تلقائياً عند إعادة تشغيل الخادم.
-
----
-
-## 🔌 الـ Endpoints المتاحة
-
-### 🤖 الذكاء الاصطناعي
-
-#### `POST /groq` — Llama 4 Scout (الأقوى والأشمل)
-
-النموذج الرئيسي. يدعم النص والصور والصوت والفيديو مع جلسات جماعية محفوظة في MongoDB وـ Gemini كـ fallback.
-
-```json
-// طلب نصي عادي
-{
-  "thread_id": "group_xyz",
-  "sender_name": "Ahmed",
-  "prompt": "ما هو الذكاء الاصطناعي؟"
-}
-
-// طلب مع صورة
-{
-  "thread_id": "group_xyz",
-  "sender_name": "Ahmed",
-  "prompt": "ما هذه الصورة؟",
-  "attachment": {
-    "kind": "image",
-    "url": "https://example.com/photo.jpg"
-  }
-}
-
-// طلب مع صوت
-{
-  "thread_id": "group_xyz",
-  "sender_name": "Ahmed",
-  "prompt": "لخّص ما قيل",
-  "attachment": {
-    "kind": "audio",
-    "url": "https://example.com/voice.mp3"
-  }
-}
-
-// مسح ذاكرة المجموعة
-{
-  "thread_id": "group_xyz",
-  "clear": true
-}
-```
-
-**الاستجابة:**
-```json
-{
-  "reply": "الذكاء الاصطناعي هو...",
-  "provider": "groq | groq-vision | groq-whisper | gemini-fallback"
-}
-```
-
----
-
-#### `POST /gemini` — Gemini 2.5 Flash
-
-يستخدم Google Search Grounding للحصول على معلومات حديثة. يدعم 4 مفاتيح API مع تناوب تلقائي عند نفاد الحصة. Groq كـ fallback.
-
-```json
-{
-  "thread_id": "group_xyz",
-  "sender_name": "Sara",
-  "prompt": "ما آخر أخبار الذكاء الاصطناعي؟"
-}
-```
-
-**الاستجابة:**
-```json
-{
-  "reply": "...",
-  "provider": "gemini | groq"
-}
-```
-
----
-
-#### `POST /gptx` — GPT-4o
-
-عبر GitHub Models API. يدعم الصور بشكل مباشر.
-
-```json
-{
-  "thread_id": "group_xyz",
-  "sender_name": "Ali",
-  "prompt": "اشرح هذه الصورة",
-  "image_url": "https://example.com/image.jpg"
-}
-```
-
-**أو إرسال الصورة كـ base64:**
-```json
-{
-  "thread_id": "group_xyz",
-  "sender_name": "Ali",
-  "prompt": "ما هذا؟",
-  "image_b64": "data:image/jpeg;base64,/9j/4AAQ...",
-  "image_type": "image/jpeg"
-}
-```
-
----
-
-#### `POST /cerebras` — Cerebras GPT-OSS
-
-نماذج مفتوحة المصدر سريعة الاستجابة.
-
-```json
-{
-  "thread_id": "group_xyz",
-  "sender_name": "Nour",
-  "prompt": "اكتب قصيدة عن البحر",
-  "model": "120b"
-}
-```
-
-| قيمة `model` | النموذج الفعلي |
-|---|---|
-| `"120b"` | `gpt-oss-120b` (افتراضي) |
-| `"20b"` | `gpt-oss-20b` |
-
----
-
-#### `POST /hf` — HuggingFace Inference (20+ نموذج)
-
-الوصول إلى عشرات النماذج عبر HuggingFace Inference API.
-
-```json
-{
-  "thread_id": "group_xyz",
-  "sender_name": "Maha",
-  "prompt": "ترجم هذا النص للإنجليزية: مرحبا بالعالم",
-  "model": "qwen72"
-}
-```
-
-**النماذج المتاحة (اختصارات):**
-
-| الاختصار | النموذج الكامل |
-|---|---|
-| `qwen` / `qwen72` | Qwen2.5-72B-Instruct |
-| `qwen3` | Qwen3-235B-A22B |
-| `llama4` | Llama-4-Scout-17B |
-| `llama70` | Llama-3.3-70B-Instruct |
-| `deepseek` | DeepSeek-R1-Distill-Qwen-32B |
-| `gemma` | Gemma-3-27b-it |
-| `phi4` | Microsoft Phi-4 |
-| `mistral22` | Mistral-Small-3.1-22B |
-| `command` | Cohere Command R+ |
-
-> استعراض كل النماذج: `GET /hf/models`
-
----
-
-### 🖼️ الصور
-
-#### `POST /image` — توليد الصور
-
-```json
-{
-  "prompt": "a beautiful sunset over the ocean, photorealistic",
-  "model": "flux",
-  "width": 1024,
-  "height": 1024
-}
-```
-
-**الاستجابة:**
-```json
-{
-  "image_base64": "/9j/4AAQ...",
-  "content_type": "image/jpeg",
-  "model_used": "black-forest-labs/FLUX.1-schnell"
-}
-```
-
-| اختصار | النموذج |
-|---|---|
-| `flux` | FLUX.1-schnell (افتراضي، الأسرع) |
-| `flux-dev` | FLUX.1-dev (أعلى جودة) |
-| `sdxl` / `sd` | SDXL-Turbo |
-
----
-
-#### `POST /pinterest` — بحث صور
-
-```json
-{
-  "query": "minimalist bedroom design",
-  "limit": 5
-}
-```
-
-**الاستجابة:**
-```json
-{
-  "images": ["https://i.pinimg.com/...", "..."],
-  "query": "minimalist bedroom design"
-}
-```
-
----
-
-### 🎵 الصوت والموسيقى
-
-#### `POST /sing/search` — البحث في SoundCloud
-
-```json
-{
-  "query": "Fairuz يا طير"
-}
-```
-
-**الاستجابة:**
-```json
-{
-  "results": [
-    {"title": "يا طير — فيروز", "url": "https://soundcloud.com/..."},
-    ...
-  ]
-}
-```
-
-#### `POST /sing/download` — تحميل الأغنية
-
-```json
-{
-  "url": "https://soundcloud.com/artist/track-name",
-  "title": "اسم الأغنية"
-}
-```
-
-**الاستجابة:**
-```json
-{
-  "audio_b64": "SUQzBAAAAAAAI...",
-  "title": "اسم الأغنية",
-  "size": 4500000
-}
-```
-
----
-
-#### `GET /stickers/mood?title=...` — ستيكر يناسب مزاج الأغنية
-
-يحلّل اسم الأغنية بالذكاء الاصطناعي ويُرجع GIF مناسب من Giphy.
+| Plugin         | المنطق | لماذا Node بدل Go نقي |
+|----------------|--------|------------------------|
+| `chess`        | `scripts/chess/chess_engine.js` | لا مكافئ Go ناضج قابل للتحميل هنا لـ `python-chess`+`cairosvg`؛ npm فيه `chess.js`+`sharp` جاهزين |
+| `pinterest`    | `scripts/pinterest/pinterest_scraper.js` | يحتاج متصفح حقيقي (Playwright) لتجاوز حماية Pinterest/Cloudflare |
+| `manga_bridge` | `scripts/mangabridge/manga_scraper.js` | نفس السبب — يحتاج متصفح حقيقي لتجاوز Cloudflare على 3asq.pro |
+| `img_tr`       | `scripts/img_tr/img_tr_engine.js` | OCR + رسم النص فوق الصورة — لا مكافئ Go ناضج قابل للتحميل هنا؛ npm فيه أدوات جاهزة |
+
+باقي الـ 4 plugins (`gemini`, `groq`, `sub`, `novel`) **Go خالص
+100%** بدون أي تبعية Node. (يوجد أيضاً `ping` — مثال توضيحي بسيط Go خالص،
+وليس أحد الثمانية المحوَّلة من بايثون — راجع "كيف تضيف plugin Go خالص
+جديد" أدناه.)
+
+## حالة كل plugin (مبني ومُختبر)
+
+| Plugin         | Endpoint(s) | الحالة |
+|----------------|-------------|--------|
+| `gemini`       | `POST /gemini` | ✅ Go خالص |
+| `groq`         | `POST /groq` | ✅ Go خالص (نص/صورة/صوت/فيديو) |
+| `sub`          | `POST /subtitler/create`, `GET /subtitler/status/{job_id}`, `GET /subtitler/download/{job_id}` | ✅ Go خالص — اختُبر بفيديو حقيقي + ffmpeg حقيقي |
+| `novel`        | `POST /novel`, `GET /novel/sites`, `DELETE /novel/cache` | ✅ Go خالص — استخراج HTML بدون تبعيات + اختبارات وحدة |
+| `chess`        | `POST /process_move` | ✅ Go + Node — اختُبر end-to-end (نقلات، كش مات، رسم الرقعة) |
+| `pinterest`    | `POST /pinterest`, `GET /pinterest/health` | ✅ Go + Node — منطق مكتوب بالكامل + اختبارات وحدة للسمافور (semaphore)، **الكشط الفعلي غير مُختبر بمتصفح حقيقي هنا** (انظر أدناه) |
+| `manga_bridge` | `POST /manga-bridge/jobs`, `GET /manga-bridge/jobs/{job_id}`, `GET /manga-bridge/jobs/{job_id}/image/{idx}` | ✅ Go + Node — نفس ملاحظة pinterest |
+| `img_tr`       | `POST /img_tr`, `POST /img_tr/batch` | ✅ Go + Node (OCR + رسم) — مع اختبارات وحدة |
+| `ping` (مثال)  | `GET /ping` | ✅ Go خالص — توضيحي فقط، ليس جزءاً من الثمانية المحوَّلة |
+
+## ملاحظة صادقة عن pinterest و manga_bridge
+
+بيئة التطوير المستخدمة لبناء هذا المشروع تحجب `cdn.playwright.dev`،
+فتعذّر فيها تحميل متصفح Chromium نفسه (`npx playwright install
+chromium` يفشل). بالتالي سكربتا `pinterest_scraper.js` و
+`manga_scraper.js` **مكتوبان ومنطقياً صحيحان ومُختبران في مسارات
+الفشل السليم** (يرجعان JSON خطأ واضح بدل الانهيار)، لكن لم يتسنَّ اختبار
+الكشط الفعلي بمتصفح حقيقي. على أي جهاز/صورة Docker بإنترنت طبيعي (راجع
+الـ Dockerfile المرفق، يحمّل Chromium أثناء البناء)، سيعملان مباشرة.
+
+هذا هو **بالضبط نفس القيد** الذي كانت تواجهه نسخة Python الأصلية أساساً
+(حظر Cloudflare المحتمل لسمعة IP الخادم) — لم نُدخل هشاشة جديدة، فقط
+نقلنا نفس الأداة (Playwright) للغة يمكن تحميل حزمها هنا (npm بدل Go modules).
+
+## البنية
 
 ```
-GET /stickers/mood?title=Blinding Lights
+sunkenbot-go/
+├── go.mod / go.sum
+├── main.go                       # الملف الوحيد الذي "يعرف" عن كل الخدمات
+├── Dockerfile                    # يثبّت Node + npm deps + Chromium تلقائياً
+├── dockerignore                  # يستثني node_modules وملفات *_test.go والـ .git من سياق البناء
+├── internal/
+│   ├── plugins/route.go          # عقد Service الوحيد (Name/Routes) — كل خدمة تلتزم به
+│   ├── httpx/httpx.go            # Handle/WrapJSON — البدائية العامة لكل handler
+│   ├── shared/http.go            # http.Client مشترك (30s) للخدمات التي تستخدم هذه المهلة فعلاً
+│   ├── middleware/middleware.go  # حماية X-Internal-Token + CORS
+│   ├── netguard/{netguard.go,netguard_test.go} # حماية SSRF لأي رابط مُرسَل من المستخدم (مرفقات/صور) + اختبارات وحدة
+│   └── session/                  # مخزن الجلسات (ذاكرة افتراضياً، Mongo اختياري)
+├── plugins/
+│   ├── gemini/gemini.go
+│   ├── groq/{groq.go,groq_test.go}
+│   ├── sub/sub.go
+│   ├── novel/{novel.go,novel_test.go}
+│   ├── img_tr/{img_tr.go,img_tr_test.go} # ترجمة نصوص الصور — endpoints: /img_tr و /img_tr/batch
+│   ├── chess/chess.go             # طبقة HTTP فقط — يستدعي scripts/chess
+│   ├── pinterest/{pinterest.go,pinterest_semaphore_test.go}       # طبقة HTTP + Ferdev fallback — يستدعي scripts/pinterest
+│   ├── mangabridge/{mangabridge.go,mangabridge_semaphore_test.go} # طبقة job/API — يستدعي scripts/mangabridge
+│   └── ping/{ping.go,ping_test.go} # مثال توضيحي فقط — يثبت بساطة إضافة خدمة جديدة
+└── scripts/                      # سكربتات Node.js (subprocess helpers)
+    ├── chess/{chess_engine.js, package.json, package-lock.json}
+    ├── pinterest/{pinterest_scraper.js, package.json, package-lock.json}
+    ├── img_tr/{img_tr_engine.js, package.json, package-lock.json}
+    └── mangabridge/{manga_scraper.js, package.json, package-lock.json}
 ```
 
-**الاستجابة:** ملف GIF مباشر (`image/gif`) مع header:
-```
-X-Mood-Category: energetic
-```
+> **ملاحظة:** `node_modules/` غير مُرفَق (كما لا يُرفَق عادة في git) —
+> يُبنى تلقائياً بـ `npm ci` (مُدرَج في الـ Dockerfile). لتشغيل محلي
+> بدون Docker: `cd scripts/<name> && npm ci` لكل واحد منها.
+>
+> **ملاحظة:** حزمة `img_tr` (وليس `imgtr`) — اسم المجلد والـ import path
+> الفعليان في `main.go` هما `sunkenbot/plugins/img_tr`، بشرطة سفلية
+> تطابق اسم الـ endpoint وسكربت Node المقابل.
 
----
-
-### 📹 الفيديو
-
-#### `POST /fb` — تحميل فيديو فيسبوك
-
-يدعم: `/watch?v=...`، `/reel/...`، `/<page>/videos/...`، `fb.watch/...`
-
-```json
-{
-  "url": "https://www.facebook.com/reel/1234567890",
-  "quality": "worst"
-}
-```
-
-**الاستجابة (ملف صغير ≤ 25MB):**
-```json
-{
-  "video_b64": "AAAAIGZ0eX...",
-  "title": "عنوان الفيديو",
-  "size": 8500000
-}
-```
-
-**الاستجابة (ملف كبير > 25MB):**
-```json
-{
-  "video_url": "https://cdn.facebook.com/...",
-  "title": "عنوان الفيديو"
-}
-```
-
-#### `POST /random` — فيديو عشوائي من Tumblr
-
-```json
-{}
-```
-
-**الاستجابة:**
-```json
-{
-  "video_b64": "...",
-  "caption": "وصف الفيديو",
-  "blog": "pleasantlytwisted",
-  "size": 3200000
-}
-```
-
----
-
-### ♟️ الشطرنج
-
-#### `POST /process_move` — تحليل الحركة والرد
-
-```json
-{
-  "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
-  "move": "e7e5",
-  "bot_mode": "minimax",
-  "difficulty": 3
-}
-```
-
-**الاستجابة:**
-```json
-{
-  "bot_move": "g1f3",
-  "fen": "...",
-  "is_checkmate": false,
-  "is_stalemate": false,
-  "evaluation": 0.15
-}
-```
-
----
-
-### 📖 الروايات
-
-#### `GET /novel/fetch?name=...&chapter=...` — قراءة فصل (5 مصادر بالتسلسل)
-
-```
-GET /novel/fetch?name=solo leveling&chapter=1
-```
-
-**الاستجابة:**
-```json
-{
-  "success": true,
-  "source": "wtr-lab",
-  "elapsed_seconds": 2.1,
-  "novel": {
-    "title": "Solo Leveling",
-    "url": "https://wtr-lab.com/en/novel/..."
-  },
-  "chapter": {
-    "number": 1,
-    "title": "Chapter 1: The Weakest Hunter",
-    "paragraphs": ["...", "..."],
-    "paragraph_count": 47,
-    "url": "..."
-  }
-}
-```
-
-**المصادر بالترتيب:** wtr-lab → FanMTL → Novelbin → LightNovelWorld → LNMTL
-
-#### `GET /novel/search?q=...` — البحث عن رواية (wtr-lab)
-#### `GET /novel/chapter?id=...&slug=...&chapter=...` — قراءة فصل مباشر (wtr-lab)
-
----
-
-### 🕌 القرآن الكريم
-
-#### `POST /quran`
-
-```json
-{
-  "surah": 2,
-  "ayah": 255
-}
-```
-
-**الاستجابة:**
-```json
-{
-  "text": "ٱللَّهُ لَآ إِلَـٰهَ إِلَّا هُوَ...",
-  "tafsir": "الله وحده لا شريك له في ألوهيته...",
-  "meta": {
-    "surah_name": "البقرة",
-    "surah_english": "The Cow",
-    "revelation": "Medinan",
-    "juz": 3,
-    "page": 42,
-    "surah": 2,
-    "ayah": 255
-  }
-}
-```
-
----
-
-### 🌍 الترجمة
-
-#### `POST /translate`
-
-```json
-{
-  "text": "Hello, how are you?",
-  "to": "ar"
-}
-```
-
-**الاستجابة:**
-```json
-{
-  "result": "مرحبا، كيف حالك؟"
-}
-```
-
----
-
-### 🏠 نقاط المعلومات
-
-#### `GET /` — حالة الخادم وقائمة الـ plugins المحمَّلة
-
-```json
-{
-  "status": "online",
-  "plugins": {
-    "groq":    {"status": "loaded", "routes_added": 1, "description": "..."},
-    "gemini":  {"status": "loaded", "routes_added": 1, "description": "..."},
-    "chess":   {"status": "error",  "reason": "ImportError: ..."},
-    ...
-  }
-}
-```
-
-#### `GET /health` — فحص الصحة
-
-```json
-{
-  "status": "healthy",
-  "timestamp": 1719500000.0
-}
-```
-
----
-
-## 🔑 متغيرات البيئة
-
-أضفها في **Settings → Variables and secrets** في HF Space:
-
-| المتغير | الاستخدام | إلزامي؟ |
-|---|---|---|
-| `GROQ_API_KEY` | Llama 4 Scout + Whisper + fallback في Gemini | موصى به |
-| `GEMINI_API_KEY` | Gemini 2.5 Flash | موصى به |
-| `GEMINI_API_KEY_2` / `_3` / `_4` | مفاتيح إضافية عند نفاد الحصة | اختياري |
-| `HF_TOKEN` | HuggingFace Inference + توليد الصور | لـ `/hf` و `/image` |
-| `GITHUB_MODELS_TOKEN` | GPT-4o عبر GitHub Models | لـ `/gptx` |
-| `CEREBRAS_API_KEY` | Cerebras GPT-OSS | لـ `/cerebras` |
-| `MONGO_URI` | حفظ جلسات المحادثة | اختياري (بدونه: بلا ذاكرة) |
-| `TUMBLR_API_KEY` | فيديوهات عشوائية | لـ `/random` |
-| `GIPHY_API_KEY` | GIF مزاج الأغنية | لـ `/stickers/mood` |
-| `FERDEV_API_KEY` | SoundCloud + Pinterest | لـ `/sing` و `/pinterest` |
-| `CF_WORKER_URL` | توجيه الطلبات عبر Cloudflare Worker | اختياري |
-| `MOOD_AI_PROVIDER` | مزوّد تصنيف المزاج (`groq`\|`gemini`\|...) | اختياري (افتراضي: `groq`) |
-
----
-
-## 🐳 Docker والنشر
-
-### متطلبات النظام (Dockerfile)
-
-الصورة مبنية على `python:3.11-slim` وتتضمن:
-
-- مكتبات الرسوميات: `libcairo2`, `libpango`, `libgdk-pixbuf`
-- خطوط: `fonts-noto-core` (لدعم العربية والآسيوية)
-- Playwright/Chromium وكل dependencies له
-- المنفذ: `7860` (HF Spaces standard)
-
-### تشغيل محلي
+## التشغيل محلياً
 
 ```bash
-git clone https://github.com/your-username/hf-space.git
-cd hf-space
+# 1) تبعيات Node لكل سكربت (مرة واحدة)
+for d in chess pinterest mangabridge img_tr; do (cd scripts/$d && npm ci); done
 
-# إنشاء ملف .env
-cp .env.example .env
-# عدّل المتغيرات في .env
+# 2) Chromium لِـ pinterest/manga_bridge فقط (chess لا يحتاجه، sharp تكفيه)
+cd scripts/pinterest && npx playwright install chromium && cd ../..
 
-# بناء وتشغيل
-docker build -t sunken-bot .
-docker run -p 7860:7860 --env-file .env sunken-bot
+# 3) بناء وتشغيل Go — مع دعم MongoDB حقيقي (راجع فقرة MONGO_URI أدناه)
+go build -tags mongo -o sunkenbot .
+./sunkenbot
+# أو مع التوكن:
+INTERNAL_TOKEN=secret ./sunkenbot
 ```
 
-بعدها افتح: `http://localhost:7860`
+### ملاحظة عن وسم `-tags mongo` وسطور `replace` في go.mod
 
-### تشغيل بدون Docker (للتطوير)
+البناء بدون `-tags mongo` (`go build -o sunkenbot .`) ينجح أيضاً، لكن
+`MONGO_URI` يُتجاهَل بصمت حينها ويعمل البوت بمخزن جلسات في الذاكرة فقط
+(غير دائم عبر إعادة التشغيل) — راجع `internal/session/mongo_stub.go` مقابل
+`mongo_real.go`. **استخدم `-tags mongo` دائماً في أي بيئة تريد فيها تخزيناً
+دائماً فعلياً**، وهو ما يفعله `Dockerfile` المرفق فعلاً.
 
-```bash
-pip install -r requirements.txt
-playwright install chromium
+الـ `Dockerfile` المرفق مبني على 3 مراحل: (1) بناء ثنائي Go بـ `-tags mongo`،
+(2) تثبيت تبعيات Node لكل سكربتات `scripts/*` مع تحميل Chromium عبر
+Playwright في صورة وسيطة تُرمى بعد نسخ النتائج فقط (`/opt/pw-browsers`
+و `scripts/`)، و(3) صورة تشغيل نهائية تُثبِّت مكتبات النظام التي يحتاجها
+Chromium فعلياً وقت التشغيل (عبر `playwright install-deps`) وتُشغِّل
+البوت كمستخدم غير-root. كما يتحقق البناء بنيوياً من تطابق نسخة `playwright`
+بين `pinterest` و`mangabridge` (يشتركان في نفس `PLAYWRIGHT_BROWSERS_PATH`)
+ويفشل مبكراً لو اختلفتا.
 
-GROQ_API_KEY=your_key uvicorn main:app --reload --port 7860
-```
+`go.mod` يحتوي أيضاً عدة أسطر `replace` تُوجِّه `go.mongodb.org/mongo-driver`
+وحزم `golang.org/x/*` نحو مرايا GitHub الرسمية بدل مساراتها الأصلية —
+ضرورية فقط في بيئات شبكة مقيّدة لا تصل لـ `go.mongodb.org`/`proxy.golang.org`
+مباشرة (راجع التعليق التفصيلي أعلى تلك الأسطر في `go.mod`). لو كانت بيئتك
+تصل لهذه النطاقات مباشرة، يمكن حذف أسطر `replace` بأمان دون أي تغيير في
+السلوك — **لكن لا تحذفها كجزء من "تنظيف" روتيني لتبعيات go.mod** دون التأكد
+أولاً أن بيئة البناء (محلياً وفي CI/Docker) تصل فعلاً لتلك النطاقات، وإلا
+سينكسر البناء بـ `-tags mongo`.
 
----
+## متغيرات البيئة
 
-## 🔄 المزامنة التلقائية مع HF Spaces
+| المتغيّر | الوصف |
+|----------|-------|
+| `PORT` | المنفذ (افتراضي `7860`) |
+| `INTERNAL_TOKEN` | حماية `X-Internal-Token` لكل الطلبات عدا `/` و `/health` |
+| `GEMINI_API_KEY` / `_2` / `_3` / `_4` | مفاتيح Gemini |
+| `GROQ_API_KEY` | مفتاح Groq |
+| `FERDEV_API_KEY` | مفتاح fallback لـ Pinterest |
+| `MONGO_URI` | اختياري — تخزين جلسات دائم، **يتطلب بناءً بـ `-tags mongo`** وإلا يُتجاهَل بصمت (راجع الفقرة أعلاه) |
+| `CHESS_SCRIPT_PATH` / `PINTEREST_SCRIPT_PATH` / `MANGA_SCRIPT_PATH` | تخصيص مسار سكربت Node لو نُشر في مكان مختلف |
+| `PINTEREST_CHROMIUM_PATH` / `MANGA_CHROMIUM_PATH` | مسار Chromium نظامي بديل بدل الافتراضي |
 
-### GitHub Action: `sync.yml`
+## لماذا هذا الشكل تحديداً؟ (internal/plugins، لا registry)
 
-عند كل `push` لـ `main`، يُرسل الكود تلقائياً لـ HF Space.
+نسخة Python كانت تعتمد على تحميل ديناميكي حقيقي: `plugin_loader.py` يفتح
+مجلد `plugins/` وقت التشغيل، يستورد كل ملف `.py` بشكل ديناميكي — وأي خطأ
+في هذا (مثل نسيان تسجيل plugin) كان يظهر بصمت وقت التشغيل فقط. النسخة
+الأولى من هذا المنفذ بـ Go استخدمت مكافئاً مباشراً لهذه الفكرة (حزمة
+`internal/registry` + `init()` + `blank import` في `main.go`) — لكن هذا
+تحديداً كان سبب اختفاء `img_tr` بصمت من الخدمة: نسيان سطر `blank import`
+واحد لا يُنتج أي خطأ ترجمة، فقط endpoint غائب لا يُكتشف إلا يدوياً.
 
-**الإعداد المطلوب:**
-1. أضف `HF_TOKEN` في **GitHub → Settings → Secrets → Actions**
-2. عدّل `huggingface_repo_id` في `sync.yml` ليطابق اسم space الخاص بك:
-   ```yaml
-   huggingface_repo_id: YOUR_USERNAME/YOUR_SPACE_NAME
-   ```
+الشكل الحالي أبسط ومباشر أكثر: `internal/plugins.Service` عقد صغير
+(`Name() string` + `Routes() []Route`)، وكل خدمة حزمة Go مستقلة تلتزم به
+دون معرفة أي شيء عن الخدمات الأخرى. `main.go` هو المكان الوحيد الذي
+"يعرف" عن كل الخدمات — سطر واحد في `services()` لكل خدمة، بلا `init()`
+وبلا `blank import`. الفرق العملي: نسيان ذلك السطر الآن يعني ببساطة أن
+الخدمة غير موجودة في القائمة (يلاحظه أي أحد بقراءة `main.go`)، لا عطلاً
+صامتاً وقت التشغيل.
 
-### GitHub Action: `keep-alive.yml`
+## كيف تضيف plugin Go خالص جديد
 
-يُرسل طلباً تلقائياً يومياً (12:00 ظهراً GMT) لإبقاء الـ Space مستيقظاً وعدم دخوله وضع السكون.
+```go
+// plugins/mytool/mytool.go
+package mytool
 
-يمكن تشغيله يدوياً من: **GitHub → Actions → Keep Hugging Face Space Alive → Run workflow**
+import (
+    "net/http"
 
----
+    "sunkenbot/internal/httpx"
+    "sunkenbot/internal/plugins"
+)
 
-## 🛡️ الأمان والموثوقية
+const Description = "وصف مختصر للـ plugin"
 
-### نظام الـ Fallback
+type Service struct{}
 
-| الخدمة | الأساسي | الاحتياطي |
-|---|---|---|
-| `/groq` | Llama 4 Scout | Gemini 2.0 Flash |
-| `/gemini` | Gemini 2.5 Flash | Groq Llama 3.3 70B |
-| `/fb` | جودة عالية | جودة منخفضة تلقائياً |
-| `/novel` | wtr-lab | fanmtl → novelbin → lnw → lnmtl |
+func New() *Service { return &Service{} }
 
-### حدود الملفات
+func (s *Service) Name() string { return "mytool" }
 
-- الحد الأقصى لتحميل الفيديو/الصوت: **25MB**
-- إذا تجاوز الملف الحد، يُرجع الـ API رابط التحميل المباشر بدلاً من الملف
+func (s *Service) Routes() []plugins.Route {
+    return []plugins.Route{
+        {Method: "GET", Pattern: "/my-endpoint", Handler: httpx.Handle(s.handle)},
+    }
+}
 
-### فلترة روابط فيسبوك
+type result struct {
+    Status string `json:"status"`
+}
 
-يرفض `/fb` تلقائياً:
-- روابط المنشورات (`/posts/`)
-- الصور (`/photo/`, `/photos/`)
-- الـ Marketplace والفعاليات
-- روابط البروفايل الشخصي
-
-ويقبل فقط روابط الفيديوهات الحقيقية.
-
-### Cloudflare Proxy
-
-يمكن توجيه كل الطلبات الخارجية عبر Cloudflare Worker لتجنب حظر IP:
-
-```python
-from proxy_client import proxy_get
-
-response = proxy_get("https://some-api.com/data", timeout=15)
-```
-
----
-
-## 🗃️ MongoDB والجلسات
-
-الـ plugins التالية تحفظ سياق المحادثة في MongoDB:
-`/groq`, `/gemini`, `/gptx`, `/cerebras`, `/hf`
-
-**سلوك الجلسات:**
-- يحفظ آخر **10 رسائل** لكل `thread_id`
-- إذا لم يُضبط `MONGO_URI`، يعمل الـ API بدون ذاكرة (stateless)
-- لمسح ذاكرة مجموعة: أرسل `"clear": true`
-
-**مخطط المجموعات في قاعدة البيانات:**
-```
-db: sunken
-  ├── groq_sessions
-  ├── gemini_sessions
-  ├── gptx_sessions
-  ├── cerebras_sessions
-  └── hf_sessions
-```
-
-كل وثيقة:
-```json
-{
-  "_id": "thread_id_هنا",
-  "messages": [...],
-  "updated_at": "2024-01-01T12:00:00Z"
+func (s *Service) handle(r *http.Request) (result, error) {
+    return result{Status: "ok"}, nil
 }
 ```
 
----
+ثم في `main.go`: استورد الحزمة، وأضف `mytool.New()` لقائمة `services()`
+في دالة `services()` — سطر واحد فقط. راجع `plugins/ping/ping.go` لمثال
+كامل وأبسط بهذا النمط بالضبط.
 
-## 🔧 التوسعة والتطوير
+## كيف تضيف plugin بحاجة Node.js (نمط chess/pinterest/manga_bridge)
 
-### إضافة نموذج لـ `/hf`
-
-في `plugins/hf.py`، أضف اختصار النموذج لقاموس `SHORTCUTS`:
-
-```python
-SHORTCUTS = {
-    ...
-    "my_model": "organization/model-name-on-hf",
-}
-```
-
-### إضافة نموذج يدعم الصور لـ `/hf`
-
-أضفه أيضاً لـ `VISION_MODELS`:
-```python
-VISION_MODELS = {
-    ...
-    "organization/model-name-on-hf",
-}
-```
-
-### إضافة متطلبات خاصة لـ Plugin
-
-أنشئ ملفاً في `plugins/requirements/<plugin_name>.txt`:
-```
-# plugins/requirements/my_feature.txt
-some-library>=1.0.0
-another-package
-```
-
-سيُثبَّت تلقائياً عند بدء تشغيل الخادم.
-
-### إضافة متطلبات apt-get
-
-في ملف الـ plugin:
-```python
-DOCKERFILE_DEPS = ["ffmpeg", "libsndfile1"]
-```
-
-سيُضافان تلقائياً لـ `Dockerfile` عند التشغيل.
-
----
-
-## 📊 مثال على تدفق طلب `/groq` بالكامل
-
-```
-Client
-  │
-  ▼
-POST /groq  {"thread_id": "g1", "sender_name": "Ali", "prompt": "ما الطقس؟"}
-  │
-  ▼
-plugin_loader.py (plugins/groq.py تم تحميله مسبقاً)
-  │
-  ▼
-MongoDB: تحميل آخر 10 رسائل للـ thread_id "g1"
-  │
-  ▼
-بناء messages = [system_prompt, ...context, user_message]
-  │
-  ▼
-Groq API (Llama 4 Scout)
-  ├── نجاح → reply
-  └── فشل → Gemini 2.0 Flash fallback
-              ├── نجاح → reply
-              └── فشل → 503 "كل الخوادم فشلت"
-  │
-  ▼
-MongoDB: حفظ الرسالة والرد
-  │
-  ▼
-{"reply": "الطقس اليوم...", "provider": "groq"}
-```
-
----
-
-## 📜 الترخيص
-
-هذا المشروع مرخَّص بموجب رخصة **MIT** — راجع ملف [LICENSE](LICENSE) للتفاصيل.
-
----
-
-## 🤝 المساهمة
-
-1. افتح **Issue** لوصف الميزة أو الخطأ
-2. أنشئ **Fork** للمستودع
-3. أضف الـ plugin الجديد في `plugins/`
-4. أرسل **Pull Request**
-
-> **تذكير:** `main.py` و`plugin_loader.py` ثابتان ولا يُعدَّلان. كل الإضافات تتم عبر `plugins/` فقط.
+1. أنشئ `scripts/<name>/` بحزمة npm مستقلة (`npm init -y && npm install ...`)
+2. اكتب السكربت بنفس بروتوكول JSON عبر stdin/stdout المستخدم في الثلاثة الحاليين
+3. أنشئ `plugins/<name>/<name>.go` بطبقة HTTP رفيعة تستدعي السكربت عبر
+   `os/exec.CommandContext` (انسخ نمط `plugins/chess/chess.go` — الأبسط)
+4. أضف تثبيت `npm ci` للسكربت الجديد في الـ Dockerfile
