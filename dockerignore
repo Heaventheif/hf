@@ -1,5 +1,0 @@
-.git
-*.md
-!README.md
-**/*_test.go
-data/

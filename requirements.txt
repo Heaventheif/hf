@@ -1,0 +1,19 @@
+fastapi
+uvicorn[standard]
+pydantic
+pillow
+requests
+
+opencv-python
+numpy
+
+# FIX: CPU-only torch - يقلل حجم الـ image من ~3GB إلى ~700MB
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+
+paddlepaddle
+paddleocr
+
+transformers
+sentencepiece
+protobuf
