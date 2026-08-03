@@ -1,0 +1,6 @@
+# ─── متطلبات البنية التحتية — لا تُعدَّل ────────────────────────────
+# هذا الملف للـ framework فقط (FastAPI, uvicorn, pydantic).
+# متطلبات كل plugin تُعلَن في Plugin.requirements داخل ملف الـ plugin.
+fastapi
+uvicorn[standard]
+pydantic

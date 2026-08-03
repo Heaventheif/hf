@@ -7,10 +7,22 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-COPY requirements.txt .
+# ─── نسخ ما يحتاجه collect_requirements.py فقط ───────────────────────
+# (قبل pip install لاستغلال Docker layer cache)
+COPY requirements.base.txt .
+COPY internal/ ./internal/
+COPY plugins/ ./plugins/
+COPY collect_requirements.py .
+
+# ─── جمع requirements من plugins وكتابة requirements.txt ─────────────
+RUN python collect_requirements.py
+
+# ─── تثبيت الحزم المجموعة ────────────────────────────────────────────
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py pipeline.py ocr_engines.py translators.py ./
+# ─── نسخ بقية الملفات ────────────────────────────────────────────────
+COPY main.py .
 
 EXPOSE 7860
-CMD ["uvicorn", "app:app", "--host=0.0.0.0", "--port=7860"]
+
+CMD ["uvicorn", "main:app", "--host=0.0.0.0", "--port=7860"]

@@ -1,19 +1,22 @@
+# ─── متطلبات البنية التحتية (ثابتة) ───────────────────────────
+# ─── متطلبات البنية التحتية — لا تُعدَّل ────────────────────────────
+# هذا الملف للـ framework فقط (FastAPI, uvicorn, pydantic).
+# متطلبات كل plugin تُعلَن في Plugin.requirements داخل ملف الـ plugin.
 fastapi
 uvicorn[standard]
 pydantic
-pillow
-requests
 
+# ─── pip extras من plugins ─────────────────────────────────────
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# ─── حزم plugins (مجموعة تلقائياً) ────────────────────────────
+requests
+pillow
 opencv-python
 numpy
-
-# FIX: CPU-only torch - يقلل حجم الـ image من ~3GB إلى ~700MB
---extra-index-url https://download.pytorch.org/whl/cpu
-torch
-
 paddlepaddle
 paddleocr
-
 transformers
 sentencepiece
 protobuf
+torch
