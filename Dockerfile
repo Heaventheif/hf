@@ -3,6 +3,14 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
+    # ─── إضافات مطلوبة لـ chess plugin ──────────────────────────────
+    # Cairo: تحويل SVG → PNG (يستخدمها cairosvg)
+    libcairo2 \
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libgdk-pixbuf2.0-0 \
+    # Stockfish: محرك الشطرنج (fallback إذا فشل Lichess Cloud)
+    stockfish \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
