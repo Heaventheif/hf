@@ -219,7 +219,9 @@ async def _handle_process_move(req: MoveRequest) -> JSONResponse:
         })
 
     # ── نقلة البوت ───────────────────────────────────────────────────────────
-    if req.bot_mode and req.move:
+    # الإصلاح: يجب أن يلعب البوت حتى عند الافتتاح (move=None)،
+    # لأن البوت قد يكون الأبيض ويحتاج للعب أول نقلة بدون إدخال بشري.
+    if req.bot_mode:
         bot_uci = _get_engine_move(board.fen(), req.difficulty)
         if bot_uci:
             try:
