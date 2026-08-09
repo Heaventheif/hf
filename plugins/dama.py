@@ -272,18 +272,22 @@ def check_game_over(board: list, next_turn: str) -> tuple[bool, Optional[str]]:
 _SQ = BOARD_SIZE // 8   # حجم المربع الواحد بالبكسل
 
 _C = {
-    "light":    "#F0D9B5",
-    "dark":     "#B58863",
-    "last":     "#AABA44",
-    "border":   "#2B2B2B",
-    "coord":    "#E0E0E0",
-    "r_fill":   "#CC2200",
-    "r_stroke": "#881100",
-    "r_shine":  "#FF6655",
-    "b_fill":   "#1155CC",
-    "b_stroke": "#003388",
-    "b_shine":  "#4488FF",
-    "shadow":   "rgba(0,0,0,0.28)",
+    "light":      "#FFFFFF",
+    "dark":       "#1A1A1A",
+    "last":       "#004400",
+    "grid":       "#00CC44",
+    "border_out": "#000000",
+    "border_in":  "#00CC44",
+    "sidebar_bg": "#111111",
+    "coord_fg":   "#00FF66",
+    "coord_font": "Courier New, monospace",
+    "r_fill":     "#CC2200",
+    "r_stroke":   "#FF4422",
+    "r_shine":    "#FF7755",
+    "b_fill":     "#1155CC",
+    "b_stroke":   "#4488FF",
+    "b_shine":    "#66AAFF",
+    "shadow":     "rgba(0,0,0,0.45)",
 }
 
 
@@ -292,20 +296,48 @@ def _board_svg(
     last_from: Optional[tuple[int, int]] = None,
     last_to:   Optional[tuple[int, int]] = None,
 ) -> str:
-    """يولّد SVG للرقعة الحالية."""
-    sq = _SQ
-    S  = BOARD_SIZE
-    last_sq = {last_from, last_to} - {None}
+    """يولّد SVG للرقعة بتصميم أسود/أبيض مع خطوط خضراء وشريط جانبي."""
+    sq       = _SQ
+    S        = BOARD_SIZE
+    SIDEBAR  = sq                      # عرض الشريط الجانبي = عرض مربع
+    FOOT     = sq // 2                 # ارتفاع شريط الأسفل
+    BORDER   = 4                       # سمك الحدود الخضراء الداخلية
+    OUT_B    = 6                       # سمك الحدود الخارجية السوداء
+    GRID_W   = 1                       # سمك خطوط الشبكة
+
+    # إجمالي أبعاد الصورة
+    W = S + SIDEBAR + OUT_B * 2        # عرض كامل = رقعة + شريط + حدود
+    H = S + FOOT    + OUT_B * 2        # ارتفاع كامل = رقعة + تذييل + حدود
+
+    # إزاحة الرقعة داخل الصورة
+    OX = OUT_B + SIDEBAR               # X بداية الرقعة (بعد الحدود والشريط)
+    OY = OUT_B                         # Y بداية الرقعة
+
+    last_sq  = {last_from, last_to} - {None}
+    fnt      = max(sq // 4, 12)
+    fnt_sm   = max(sq // 5, 10)
 
     lines: list[str] = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{S}" height="{S}">',
-        f'<rect width="{S}" height="{S}" fill="{_C["border"]}"/>',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}">',
+
+        # ── خلفية كاملة سوداء ──────────────────────────────────────────────
+        f'<rect width="{W}" height="{H}" fill="{_C["border_out"]}"/>',
+
+        # ── خلفية الشريط الجانبي ───────────────────────────────────────────
+        f'<rect x="{OUT_B}" y="{OUT_B}" width="{SIDEBAR}" height="{S}"'
+        f' fill="{_C["sidebar_bg"]}"/>',
+
+        # ── حدود داخلية خضراء حول الرقعة ──────────────────────────────────
+        f'<rect x="{OX - BORDER}" y="{OY - BORDER}"'
+        f' width="{S + BORDER*2}" height="{S + BORDER*2}"'
+        f' fill="none" stroke="{_C["border_in"]}" stroke-width="{BORDER}"/>',
     ]
 
-    for row in range(7, -1, -1):       # صف 7 في الأعلى على الشاشة
+    # ── رسم مربعات الرقعة ────────────────────────────────────────────────────
+    for row in range(7, -1, -1):
         for col in range(8):
-            x = col * sq
-            y = (7 - row) * sq         # y=0 عند الأعلى (صف 7)
+            x = OX + col * sq
+            y = OY + (7 - row) * sq
 
             if (col, row) in last_sq:
                 fill = _C["last"]
@@ -318,13 +350,32 @@ def _board_svg(
                 f'<rect x="{x}" y="{y}" width="{sq}" height="{sq}" fill="{fill}"/>'
             )
 
+    # ── خطوط الشبكة الخضراء (فوق المربعات) ──────────────────────────────────
+    for i in range(9):   # 9 خطوط عمودية
+        lx = OX + i * sq
+        lines.append(
+            f'<line x1="{lx}" y1="{OY}" x2="{lx}" y2="{OY + S}"'
+            f' stroke="{_C["grid"]}" stroke-width="{GRID_W}"/>'
+        )
+    for i in range(9):   # 9 خطوط أفقية
+        ly = OY + i * sq
+        lines.append(
+            f'<line x1="{OX}" y1="{ly}" x2="{OX + S}" y2="{ly}"'
+            f' stroke="{_C["grid"]}" stroke-width="{GRID_W}"/>'
+        )
+
+    # ── رسم القطع ─────────────────────────────────────────────────────────────
+    for row in range(7, -1, -1):
+        for col in range(8):
             piece = board[_idx(col, row)]
             if piece is None:
                 continue
 
-            cx  = x + sq // 2
-            cy  = y + sq // 2
-            r   = sq * 0.38
+            x  = OX + col * sq
+            y  = OY + (7 - row) * sq
+            cx = x + sq // 2
+            cy = y + sq // 2
+            r  = sq * 0.38
 
             # ظل
             lines.append(
@@ -336,12 +387,10 @@ def _board_svg(
             else:
                 fc, sc, sh = _C["b_fill"], _C["b_stroke"], _C["b_shine"]
 
-            # جسم القطعة
             lines.append(
                 f'<circle cx="{cx}" cy="{cy}" r="{r:.1f}"'
                 f' fill="{fc}" stroke="{sc}" stroke-width="2.5"/>'
             )
-            # لمعة
             lines.append(
                 f'<circle cx="{cx - r*0.25:.1f}" cy="{cy - r*0.25:.1f}"'
                 f' r="{r * 0.3:.1f}" fill="{sh}" opacity="0.5"/>'
@@ -355,24 +404,39 @@ def _board_svg(
                     f' font-size="{fs}" fill="gold" font-family="serif">♛</text>'
                 )
 
-    # إحداثيات الأعمدة (A–H) في الأسفل
-    fnt = max(sq // 5, 10)
-    for col in range(8):
-        lbl = chr(ord("A") + col)
-        cx  = col * sq + sq // 2
-        lines.append(
-            f'<text x="{cx}" y="{S - 3}" text-anchor="middle"'
-            f' font-size="{fnt}" fill="{_C["coord"]}" font-family="monospace">{lbl}</text>'
-        )
-
-    # إحداثيات الصفوف (1–8) على اليسار
+    # ── شريط جانبي: أرقام الصفوف (1–8) ──────────────────────────────────────
     for row in range(8):
         lbl = str(row + 1)
-        cy  = (7 - row) * sq + sq // 2 + fnt // 3
+        cy  = OY + (7 - row) * sq + sq // 2
         lines.append(
-            f'<text x="3" y="{cy}" text-anchor="start"'
-            f' font-size="{fnt}" fill="{_C["coord"]}" font-family="monospace">{lbl}</text>'
+            f'<text x="{OUT_B + SIDEBAR // 2}" y="{cy}"'
+            f' text-anchor="middle" dominant-baseline="central"'
+            f' font-size="{fnt}" font-weight="bold"'
+            f' fill="{_C["coord_fg"]}" font-family="{_C["coord_font"]}">{lbl}</text>'
         )
+
+    # ── شريط أسفل: حروف الأعمدة (A–H) ───────────────────────────────────────
+    for col in range(8):
+        lbl = chr(ord("A") + col)
+        cx  = OX + col * sq + sq // 2
+        cy  = OY + S + FOOT // 2
+        lines.append(
+            f'<text x="{cx}" y="{cy}"'
+            f' text-anchor="middle" dominant-baseline="central"'
+            f' font-size="{fnt}" font-weight="bold"'
+            f' fill="{_C["coord_fg"]}" font-family="{_C["coord_font"]}">{lbl}</text>'
+        )
+
+    # ── حد خضر بين الشريط والرقعة ────────────────────────────────────────────
+    lines.append(
+        f'<line x1="{OX}" y1="{OY}" x2="{OX}" y2="{OY + S}"'
+        f' stroke="{_C["border_in"]}" stroke-width="{BORDER}"/>'
+    )
+    # حد خضر بين الرقعة والتذييل
+    lines.append(
+        f'<line x1="{OX}" y1="{OY + S}" x2="{OX + S}" y2="{OY + S}"'
+        f' stroke="{_C["border_in"]}" stroke-width="{BORDER}"/>'
+    )
 
     lines.append("</svg>")
     return "\n".join(lines)
@@ -385,10 +449,16 @@ def _board_png_b64(
 ) -> str:
     """يُحوّل الرقعة إلى PNG base64 جاهزة للإرسال."""
     svg = _board_svg(board, last_from, last_to)
+    # الأبعاد الفعلية = رقعة + شريط جانبي + تذييل + حدود
+    _sidebar = _SQ
+    _foot    = _SQ // 2
+    _outb    = 6
+    out_w    = BOARD_SIZE + _sidebar + _outb * 2
+    out_h    = BOARD_SIZE + _foot    + _outb * 2
     png = cairosvg.svg2png(
         bytestring    = svg.encode("utf-8"),
-        output_width  = BOARD_SIZE,
-        output_height = BOARD_SIZE,
+        output_width  = out_w,
+        output_height = out_h,
     )
     return base64.b64encode(png).decode("utf-8")
 
