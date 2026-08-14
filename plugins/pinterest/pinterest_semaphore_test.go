@@ -1,0 +1,58 @@
+package pinterest
+
+import (
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// TestConcurrencySemaphore_LimitsParallelScrapes يثبت أن حارس التزامن
+// الجديد يمنع فعلياً أكثر من concurrentScrapes عملية "ثقيلة" من العمل في
+// آن واحد — دون تشغيل Chromium حقيقي: نحاكي فقط سلوك الحارس نفسه (نفس
+// القناة sem التي يستخدمها runScraper فعلياً). نفس نمط اختبار
+// mangabridge_semaphore_test.go مطبَّق هنا لأن pinterest يستخدم نفس آلية
+// الحد بالضبط.
+func TestConcurrencySemaphore_LimitsParallelScrapes(t *testing.T) {
+	s := New(nil)
+
+	const workers = 8
+	var current int32
+	var maxObserved int32
+	var wg sync.WaitGroup
+
+	for range workers {
+		wg.Go(func() {
+
+			s.sem <- struct{}{}
+			defer func() { <-s.sem }()
+
+			n := atomic.AddInt32(&current, 1)
+			for {
+				m := atomic.LoadInt32(&maxObserved)
+				if n <= m || atomic.CompareAndSwapInt32(&maxObserved, m, n) {
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+			atomic.AddInt32(&current, -1)
+		})
+	}
+	wg.Wait()
+
+	if maxObserved > concurrentScrapes {
+		t.Fatalf("observed %d concurrent scrapes, want <= %d (semaphore cap)", maxObserved, concurrentScrapes)
+	}
+	if maxObserved != concurrentScrapes {
+		t.Logf("observed max concurrency %d (cap is %d) — test still valid, just didn't saturate the cap this run", maxObserved, concurrentScrapes)
+	}
+}
+
+// TestNew_SemaphoreCapacityMatchesConcurrentScrapes يثبت أن New() تبني
+// القناة فعلاً بالسعة concurrentScrapes، لا سعة عشوائية أو صفرية.
+func TestNew_SemaphoreCapacityMatchesConcurrentScrapes(t *testing.T) {
+	s := New(nil)
+	if cap(s.sem) != concurrentScrapes {
+		t.Fatalf("cap(sem) = %d, want %d", cap(s.sem), concurrentScrapes)
+	}
+}
