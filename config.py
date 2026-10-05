@@ -2,7 +2,8 @@
 import os
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
+PROTOCOL = 2          # يتحقق منه العميل؛ يختلف إن كان الـ Space يشغّل كوداً آخر
 PORT = int(os.getenv("PORT", "7860"))
 
 MODELS_DIR = Path(os.getenv("MODELS_DIR", str(Path.home() / "models")))
@@ -22,18 +23,18 @@ CPU_THREADS = int(os.getenv("CPU_THREADS", str(os.cpu_count() or 2)))
 
 # --- الصوت الوارد ---
 SR = 16000
-MAX_UTT_SEC = 8.0        # أقصى طول للمقطع
-MIN_SILENCE_SEC = 0.35   # وقفة تنهي المقطع
+MAX_UTT_SEC = 5.5        # أقصى طول للمقطع (أقصر = تأخير أقل)
+MIN_SILENCE_SEC = 0.28   # وقفة تنهي المقطع
 PAD_SEC = 0.2            # حشو قبل/بعد الكلام
 MIN_SPEECH_SEC = 0.25    # أقصر كلام مقبول
 
 # --- دمج الجمل ---
-MERGE_MAX_SEC = 6.0      # لا ننتظر دمجاً بعد هذا الطول
-MERGE_GAP_SEC = 1.5      # أقصى فجوة بين مقطعين يمكن دمجهما
+MERGE_MAX_SEC = 4.0      # لا ننتظر دمجاً بعد هذا الطول
+MERGE_GAP_SEC = 1.0      # أقصى فجوة بين مقطعين يمكن دمجهما
 
 # --- المعالجة ---
 MAX_IN_FLIGHT = 2        # مقاطع قيد الانتظار/المعالجة لكل جلسة
-LS_MIN, LS_MAX = 0.8, 1.15   # حدود length_scale في Piper
+LS_MIN, LS_MAX = 0.7, 1.15   # حدود length_scale في Piper
 RTF_DOWN = 0.8           # فوق هذا القيمة ثلاث مرات متتالية → خفض نموذج STT
 RTF_UP = 0.3             # متوسط أقل من هذا → رفع النموذج
 CACHE_MAX_BYTES = 50 * 1024 * 1024

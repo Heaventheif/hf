@@ -71,7 +71,7 @@ def index():
 def health():
     status = "ok" if E.ready else ("error" if E.error else "loading")
     return {"status": status, "stt": E.stt is not None, "translation": E.mt is not None,
-            "tts": E.tts is not None, "device": E.device, "version": C.VERSION,
+            "tts": E.tts is not None, "device": E.device, "version": C.VERSION, "protocol": C.PROTOCOL,
             "stt_level": E.stt.level if E.stt else None, "error": E.error}
 
 
@@ -91,6 +91,8 @@ class Session:
         self.seg = Segmenter()
         self.task = None
         self.src_hint = hello.get("src_lang", "auto") or "auto"
+        self.speed = 1.0
+        self.rate = 1.0
         self.voice = self._pick_voice(hello.get("voice"))
         self.last_level = E.stt.level
         self.reset(hello)
@@ -106,6 +108,9 @@ class Session:
             self.task.cancel()
         self.id = int(d.get("session", 0))
         self.t0 = float(d.get("media_t0", 0.0))
+        self.rate = max(0.25, min(4.0, float(d.get("rate", 1.0) or 1.0)))
+        if "speed" in d:
+            self.speed = max(0.7, min(1.5, float(d["speed"] or 1.0)))
         if "voice" in d:
             self.voice = self._pick_voice(d["voice"])
         self.seg.reset(0)
@@ -123,7 +128,7 @@ class Session:
         self.task = asyncio.create_task(self.worker(self.id, self.q, self.ev))
 
     def tm(self, sample: int) -> float:
-        return self.t0 + sample / C.SR
+        return self.t0 + sample / C.SR * self.rate
 
     def next_seq(self) -> int:
         self.seq += 1
@@ -181,7 +186,7 @@ class Session:
             self.reset(d)
         elif t == "resync":
             if int(d.get("session", -1)) == self.id:
-                self.t0 = float(d["media_t"]) - int(d["sample_offset"]) / C.SR
+                self.t0 = float(d["media_t"]) - int(d["sample_offset"]) / C.SR * self.rate
 
     # ------------------------------------------------------------ تقدّم
     def frontier(self) -> float:
@@ -291,7 +296,9 @@ class Session:
         t_mt = time.perf_counter() - t0
         if sid != self.id or not text_ar:
             return
-        ls = E.tts.plan_length_scale(text_ar, self.voice, end - start)
+        target = (end - start) / self.rate                 # ثوانٍ فعلية (wall-clock)
+        ls = E.tts.plan_length_scale(text_ar, self.voice, target)
+        ls = max(0.6, min(1.4, ls / self.speed))
         t1 = time.perf_counter()
         pcm, sr = await run(E.tts.synthesize, text_ar, self.voice, ls)
         t_tts = time.perf_counter() - t1
@@ -300,7 +307,8 @@ class Session:
         log.info("[MT] seq=%d %.2fs [TTS] %.2fs ls=%.2f", seq, t_mt, t_tts, ls)
         meta = {"type": "segment", "session": sid, "seq": self.next_seq(),
                 "src_start": round(start, 3), "src_end": round(end, 3), "sample_rate": sr,
-                "length_scale": round(ls, 2), "duration": round(len(pcm) / 2 / sr, 3)}
+                "length_scale": round(ls, 2), "duration": round(len(pcm) / 2 / sr, 3),
+                "rate": self.rate}
         if C.DEBUG:
             meta["text_src"], meta["text_ar"] = text, text_ar
         await self.send_segment(meta, pcm)
@@ -333,7 +341,7 @@ async def ws_endpoint(ws: WebSocket):
             await ws.close(code=1013)
             return
         sess = Session(ws, hello)
-        await sess.send_json({"type": "ready", "session": sess.id, "voice": sess.voice,
+        await sess.send_json({"type": "ready", "protocol": C.PROTOCOL, "session": sess.id, "voice": sess.voice,
                               "stt_level": E.stt.level, "device": E.device})
         while True:
             msg = await ws.receive()

@@ -8,7 +8,9 @@ app_port: 7860
 pinned: false
 ---
 
-# YouTube Arabic AI Dubbing: الخادم (Hugging Face Docker Space)
+# YouTube Arabic AI Dubbing: الخادم 1.1 (Hugging Face Docker Space)
+
+> **مهم:** الإضافة 1.1 تتحقق من `protocol: 2` في `/health`. إن كان الـ Space يشغّل كوداً آخر ترفض الاتصال برسالة واضحة. بعد الرفع افتح `/health` وتأكد من `"protocol":2` و`"version":"1.1.0"`.
 
 خادم FastAPI/Uvicorn **بدون Gradio**: يستقبل صوتاً حياً (PCM16 ‏16kHz) عبر WebSocket، ويعيد دبلجة عربية:
 `VAD ← faster-whisper ← NLLB-200 (CT2 int8) ← Piper (Kareem)`.
@@ -38,7 +40,7 @@ pinned: false
 ## نقاط النهاية والبروتوكول
 - `GET /health`، `GET /voices`، `WS /ws`.
 - **العميل → الخادم:** `hello` (JSON) ثم إطارات ثنائية `[uint32 session][uint32 sample_offset] + PCM16` (little-endian)، و`seek`، و`ping`، و`bye`.
-  - **إضافة على الخطة:** رسالة `resync {session, media_t, sample_offset}` لتصحيح انحراف الزمن بعد الإيقاف/الاستئناف.
+  - **دعم السرعة:** `hello`/`seek` يحملان `rate` (سرعة الفيديو) و`speed` (سرعة النطق). **إضافة على الخطة:** رسالة `resync {session, media_t, sample_offset}` لتصحيح انحراف الزمن بعد الإيقاف/الاستئناف.
 - **الخادم → العميل:** `ready`، `segment` (JSON) يتبعه إطار ثنائي `[uint32 session][uint32 seq][uint32 sample_rate] + PCM16`، و`silence {src_start, src_end}` (يدل أيضاً على تقدّم المعالجة)، و`quality`، و`error`، و`pong`.
 - أي رد بجلسة مختلفة يتجاهله العميل؛ والخادم يتجاهل إطارات الجلسات القديمة.
 
