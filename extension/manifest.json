@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Arabic AI Dubbing",
+  "version": "0.1.0",
+  "description": "دبلجة صوت YouTube إلى العربية عبر Space FastAPI وPiper.",
+  "permissions": ["tabCapture", "offscreen", "storage", "activeTab", "tabs"],
+  "host_permissions": [
+    "https://m.youtube.com/*",
+    "https://www.youtube.com/*",
+    "https://kiyunhai-s.hf.space/*"
+  ],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "Arabic Dubbing", "default_popup": "popup.html" },
+  "content_scripts": [{
+    "matches": ["https://m.youtube.com/*", "https://www.youtube.com/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }],
+  "web_accessible_resources": [{
+    "resources": ["capture-worklet.js"],
+    "matches": ["<all_urls>"]
+  }]
+}
