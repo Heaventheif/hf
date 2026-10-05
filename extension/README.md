@@ -8,7 +8,7 @@ Chrome Android الرسمي لا يتيح عادةً تثبيت إضافات س�
 
 ## التثبيت
 
-استخدم **Load unpacked** على مجلد `extension/`. رابط Space الافتراضي هو `https://kiyunhai-s.hf.space` ويمكن تغييره من Popup. مفتاح API محفوظ في `chrome.storage.local` فقط.
+استخدم **Load unpacked** على مجلد `extension/`. رابط Space الافتراضي هو `https://kiyunhai-s.hf.space` ويمكن تغييره من Popup. الاتصال مفتوح ولا يحتاج إعداد اعتماد إضافي.
 
 ## الاختبار
 

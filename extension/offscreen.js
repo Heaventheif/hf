@@ -29,7 +29,7 @@ async function stop() {
   status("stopped");
 }
 
-async function start({ streamId, spaceUrl, apiKey, mediaT0 }) {
+async function start({ streamId, spaceUrl, mediaT0 }) {
   await stop();
   sync = new SyncManager(); sync.start(mediaT0);
   scheduler = new AudioScheduler();
@@ -38,7 +38,7 @@ async function start({ streamId, spaceUrl, apiKey, mediaT0 }) {
     onAudio: (meta, pcm) => { if (!sync.ad) scheduler.play(meta, pcm, meta?.sample_rate || 22050); },
     onClose: () => status("disconnected")
   });
-  await socket.connect({ type: "hello", session: sync.session, src_lang: "auto", voice: "ar_JO-kareem-medium", api_key: apiKey || "", media_t0: mediaT0 || 0 });
+  await socket.connect({ type: "hello", session: sync.session, src_lang: "auto", voice: "ar_JO-kareem-medium", media_t0: mediaT0 || 0 });
   captureContext = new AudioContext();
   await captureContext.audioWorklet.addModule(chrome.runtime.getURL("capture-worklet.js"));
   captureStream = await navigator.mediaDevices.getUserMedia({ audio: { mandatory: { chromeMediaSource: "tab", chromeMediaSourceId: streamId } }, video: false });

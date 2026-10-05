@@ -43,10 +43,6 @@ app = FastAPI(title="YouTube Arabic AI Dubbing", version="1.0.0", lifespan=lifes
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"])
 
 
-def authorized(key: str | None) -> bool:
-    return not settings.api_key or key == settings.api_key
-
-
 @app.get("/health")
 async def health():
     return {"status": "ok" if stt and translator and tts else "loading", "stt": stt is not None, "translation": translator is not None, "tts": tts is not None, "device": settings.whisper_device, "version": "1.0.0"}
@@ -72,8 +68,8 @@ async def websocket_endpoint(ws: WebSocket):
         await send_json(ws, {"type": "error", "stage": "hello", "message": "invalid hello"})
         await ws.close(code=1003)
         return
-    if msg.get("type") != "hello" or not authorized(msg.get("api_key")):
-        await send_json(ws, {"type": "error", "stage": "auth", "message": "unauthorized"})
+    if msg.get("type") != "hello":
+        await send_json(ws, {"type": "error", "stage": "hello", "message": "hello required"})
         await ws.close(code=1008)
         return
     session = int(msg.get("session", 1))

@@ -23,9 +23,9 @@ async function start(tabId) {
   const tab = tabId ? await chrome.tabs.get(tabId) : await activeYouTubeTab();
   await ensureOffscreen();
   const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
-  const settings = await chrome.storage.local.get({ spaceUrl: "https://kiyunhai-s.hf.space", apiKey: "" });
+  const settings = await chrome.storage.local.get({ spaceUrl: "https://kiyunhai-s.hf.space" });
   const state = await chrome.tabs.sendMessage(tab.id, { type: "GET_VIDEO_STATE" }).catch(() => ({}));
-  await chrome.runtime.sendMessage({ type: "OFFSCREEN_START", streamId, tabId: tab.id, spaceUrl: settings.spaceUrl, apiKey: settings.apiKey, mediaT0: state?.currentTime || 0 });
+  await chrome.runtime.sendMessage({ type: "OFFSCREEN_START", streamId, tabId: tab.id, spaceUrl: settings.spaceUrl, mediaT0: state?.currentTime || 0 });
   return { ok: true };
 }
 

@@ -8,7 +8,6 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Settings:
     port: int = int(os.getenv("PORT", "7860"))
-    api_key: str = os.getenv("API_KEY", "").strip()
     whisper_model: str = os.getenv("WHISPER_MODEL", "tiny").strip()
     whisper_device: str = os.getenv("WHISPER_DEVICE", "cpu").strip()
     whisper_compute: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8").strip()
