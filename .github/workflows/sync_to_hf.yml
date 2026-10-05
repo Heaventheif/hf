@@ -1,0 +1,53 @@
+name: Sync to Hugging Face Space
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync-to-hugging-face:
+    name: Push to kiyunhai/s
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Setup Git LFS
+        run: git lfs install
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Push repository to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN secret is not configured" >&2; exit 1; }
+          git remote add hf "https://kiyunhai:${HF_TOKEN}@huggingface.co/spaces/kiyunhai/s"
+          git push hf HEAD:main --force
+
+      - name: Verify Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -m pip install --quiet huggingface_hub
+          HF_TOKEN="$HF_TOKEN" python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          info = HfApi(token=os.environ["HF_TOKEN"]).space_info("kiyunhai/s")
+          print(f"Space: {info.id}")
+          print(f"URL: https://huggingface.co/spaces/{info.id}")
+          print(f"SDK: {getattr(info, 'sdk', None)}")
+          print(f"Runtime: {getattr(info, 'runtime', None)}")
+          PY
