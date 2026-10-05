@@ -20,6 +20,22 @@ class Translator:
         value = (value or "").replace("-", "_")
         return self.lang_map.get(value, value if "_" in value else "eng_Latn")
 
+    def _language_token_id(self, code: str) -> int:
+        """Get an NLLB language token from both slow and fast tokenizers."""
+        language_map = getattr(self.tokenizer, "lang_code_to_id", None)
+        if language_map and code in language_map:
+            return int(language_map[code])
+        token_id = self.tokenizer.convert_tokens_to_ids(code)
+        if isinstance(token_id, list):
+            token_id = token_id[0]
+        if token_id is None or token_id == self.tokenizer.unk_token_id:
+            token_id = self.tokenizer.convert_tokens_to_ids(f"__{code}__")
+        if isinstance(token_id, list):
+            token_id = token_id[0]
+        if token_id is None or token_id == self.tokenizer.unk_token_id:
+            raise ValueError(f"NLLB language token is missing: {code}")
+        return int(token_id)
+
     def translate(self, text: str, src: str, tgt: str = "ar") -> str:
         if not text.strip():
             return ""
@@ -27,7 +43,7 @@ class Translator:
         self.tokenizer.src_lang = src_code
         encoded = self.tokenizer(text, return_tensors="np", add_special_tokens=True)
         tokens = self.tokenizer.convert_ids_to_tokens(encoded["input_ids"][0].tolist())
-        target_token = self.tokenizer.convert_ids_to_tokens([self.tokenizer.lang_code_to_id[tgt_code]])
+        target_token = self.tokenizer.convert_ids_to_tokens([self._language_token_id(tgt_code)])
         result = self.engine.translate_batch([tokens], target_prefix=[target_token], beam_size=1)[0]
         output_tokens = result.hypotheses[0]
         ids = self.tokenizer.convert_tokens_to_ids(output_tokens)
