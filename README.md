@@ -1,5 +1,5 @@
 ---
-title: YouTube Arabic AI Dubbing
+title: YouTube Arabic Dubbing
 emoji: 🎙️
 colorFrom: blue
 colorTo: green
@@ -8,43 +8,49 @@ app_port: 7860
 pinned: false
 ---
 
-# YouTube Arabic AI Dubbing
+# YouTube Arabic AI Dubbing: الخادم (Hugging Face Docker Space)
 
-خادم دبلجة عربية لحظية من الصوت الملتقط من تبويب YouTube عبر WebSocket، مع امتداد MV3 في مجلد `extension/`.
+خادم FastAPI/Uvicorn **بدون Gradio**: يستقبل صوتاً حياً (PCM16 ‏16kHz) عبر WebSocket، ويعيد دبلجة عربية:
+`VAD ← faster-whisper ← NLLB-200 (CT2 int8) ← Piper (Kareem)`.
 
-## المكونات
+## الرفع إلى Hugging Face (خطوة بخطوة)
+1. أنشئ Space جديداً: **New Space ← SDK: Docker ← Blank ← Hardware: CPU basic (مجاني)**، ويفضّل **Public**.
+2. ارفع **محتويات** هذا المجلد كما هي إلى جذر الـ Space (هذا الملف `README.md` بما فيه رأس YAML يجب أن يكون في الجذر).
+   - عبر المتصفح: *Files ← Add file ← Upload files*، أو عبر git: `git clone https://huggingface.co/spaces/USER/NAME` ثم انسخ الملفات وادفعها.
+3. انتظر البناء (Build) ‏— أول بناء ينزّل نحو 1.5GB من النماذج (وقتاً طويلاً نسبياً) وتُخبَّأ داخل الصورة.
+4. اختبر: افتح `https://USER-NAME.hf.space/health` ← يجب أن ترى `"status":"ok"`.
+5. (اختياري) **Settings ← Variables and secrets**: أضف Secret باسم `API_KEY` ثم أدخل نفس القيمة في إعدادات الإضافة.
+   - Space العام + `API_KEY` هو الحل المعتمد لأن WebSocket من المتصفح لا يرسل ترويسة `Authorization`.
 
-- **STT:** faster-whisper (tiny افتراضيًا، ويمكن اختيار base/small عبر `WHISPER_MODEL`).
-- **الترجمة:** NLLB-200 CTranslate2 int8.
-- **TTS:** Piper `ar_JO-kareem-medium`، ويُحمّل مرة واحدة عند بدء الخادم.
-- **النقل:** PCM16 mono 16 kHz من الإضافة إلى `/ws`، وPCM16 بمعدل Piper من الخادم.
+## متغيرات البيئة (كلها اختيارية)
+| المتغير | الافتراضي | الوصف |
+|---|---|---|
+| `API_KEY` | فارغ | إن وُجد: يُطلب في رسالة `hello` (وليس في الـ URL) |
+| `WHISPER_MODEL` | `base` | المستوى الابتدائي (`tiny`/`base`/`small`) |
+| `DEFAULT_VOICE` | `ar_JO-kareem-medium` | |
+| `ALLOWED_ORIGINS` | فارغ | قائمة Origins مسموحة للـ WebSocket، مثل `chrome-extension://ID` |
+| `CORS_ORIGINS` | `*` | لـ `/health` و`/voices` |
+| `DEBUG` | `false` | يضيف النصوص (`text_src`/`text_ar`) للردود ويفصّل السجلات |
+| `CPU_THREADS` | عدد الأنوية | |
 
-## تشغيل Space
+بناء أخف: أضف في Dockerfile `ARG WHISPER_MODELS="tiny base"` (يوفّر ≈ 0.5GB).
 
-يُبنى Dockerfile النماذج داخل الصورة. بعد التشغيل:
+## نقاط النهاية والبروتوكول
+- `GET /health`، `GET /voices`، `WS /ws`.
+- **العميل → الخادم:** `hello` (JSON) ثم إطارات ثنائية `[uint32 session][uint32 sample_offset] + PCM16` (little-endian)، و`seek`، و`ping`، و`bye`.
+  - **إضافة على الخطة:** رسالة `resync {session, media_t, sample_offset}` لتصحيح انحراف الزمن بعد الإيقاف/الاستئناف.
+- **الخادم → العميل:** `ready`، `segment` (JSON) يتبعه إطار ثنائي `[uint32 session][uint32 seq][uint32 sample_rate] + PCM16`، و`silence {src_start, src_end}` (يدل أيضاً على تقدّم المعالجة)، و`quality`، و`error`، و`pong`.
+- أي رد بجلسة مختلفة يتجاهله العميل؛ والخادم يتجاهل إطارات الجلسات القديمة.
 
-- `GET /health`
-- `GET /voices`
-- `wss://<space-subdomain>.hf.space/ws`
+## ما تم التحقق منه / ما لم يُتحقق منه
+- ✔ ثُبّتت الحزم في `requirements.txt` فعلاً على **Python 3.12** (وهو ما يستخدمه Dockerfile بدل 3.11، لأن أحدث `numpy` المثبّت قد لا يدعم 3.11) وفُحصت واجهات `piper-tts` و`faster-whisper`.
+- ✔ جرى اختبار المقسّم، وتحويل الأرقام، وبروتوكول WebSocket الكامل بمحركات وهمية.
+- ✔ وُجود ملفات النماذج على Hugging Face: `JustFrederik/nllb-200-distilled-600M-ct2-int8` و`rhasspy/piper-voices/ar/ar_JO/kareem/{low,medium}`.
+- ✘ **لم يُجرَّ بناء Docker كامل ولا تشغيل النماذج الحقيقية** (بيئة التطوير لا تصل إلى huggingface.co). شغّل `tools/bench.py` على الـ Space (Phase 0 ‏D) و`tools/ws_test.py` (Phase 0 ‏C) للقياس.
 
-## تثبيت الإضافة
-
-1. نزّل مجلد `extension/` كاملًا.
-2. فعّل وضع المطور في متصفح Chromium الذي يدعم الإضافات.
-3. اختر **Load unpacked** وحدد مجلد `extension/`.
-4. افتح `https://m.youtube.com` أو YouTube في تبويب مدعوم، ثم اضغط أيقونة الإضافة واضغط **Enable dubbing**.
-5. لا يحتاج اتصال الدبلجة إلى إعداد اعتماد إضافي.
-
-## قيود مهمة
-
-- `tabCapture` يحتاج نقرة مباشرة من المستخدم.
-- Chrome الرسمي على Android لا يدعم تثبيت إضافات سطح المكتب عادةً؛ استخدم متصفح Android يدعم MV3/الإضافات إن كان متاحًا، أو Chrome/Edge على سطح المكتب. دعم `tabCapture` و`offscreen` على الهاتف يعتمد على المتصفح.
-- الدبلجة متأخرة عن الفيديو بسبب المعالجة (Live Lag)، ولا يمكنها أن تسبقه.
-- محتوى DRM قد يكون صامتًا، والإعلانات تُتجاهل عند اكتشاف `.ad-showing`.
-- النموذج العربي الرسمي المتاح هنا هو Kareem فقط.
-- Space المجاني قد ينام أو يبطئ؛ استخدم زر إيقاظ الخادم من الإضافة.
-- المستخدم مسؤول عن احترام شروط YouTube وحقوق المحتوى.
-
-## الترخيص
-
-كود المشروع MIT. Piper محرك GPL-3.0؛ راجع ترخيصه عند إعادة التوزيع. نماذج الصوت والترجمة وWhisper لها تراخيصها الخاصة.
+## ملاحظات وقيود
+- **الترجمة جملة بجملة:** NLLB لا يستخدم سياقاً، لذلك لم يُنفَّذ بند «سياق آخر جملتين»؛ عُوِّض بدمج الجمل الناقصة (Sentence-aware).
+- **الـ VAD:** القطع (endpointing) بكشف طاقة متكيّف، وSilero VAD المدمج في faster-whisper يُطبَّق داخل كل مقطع (`vad_filter=True`). الموسيقى المستمرة قد تنتج قطعاً قسرياً كل ≈ 8 ث.
+- جودة Piper العربية (Kareem) متوسطة وبلا تشكيل.
+- الـ Space المجاني ينام عند الخمول ويحتاج إيقاظاً (زر «إيقاظ الخادم» في الإضافة).
+- **التراخيص:** `piper-tts` ‏GPL-3.0 (الخادم عندك فقط)، نموذج NLLB **CC-BY-NC-4.0 (غير تجاري)**، أصوات Piper وفق بطاقة كل صوت.

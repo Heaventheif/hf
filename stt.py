@@ -1,35 +1,71 @@
-from __future__ import annotations
-
+"""faster-whisper (CTranslate2) مع سلّم جودة تكيّفي."""
+import logging
 import threading
-from pathlib import Path
+from collections import deque
 
-import numpy as np
+import ctranslate2
 from faster_whisper import WhisperModel
 
+import config as C
 
-class SpeechToText:
-    def __init__(self, model_dir: Path, model_name: str = "tiny", device: str = "cpu", compute_type: str = "int8"):
-        self.model_dir = model_dir
-        self.device = device
-        self.compute_type = compute_type
+log = logging.getLogger("ytdub.stt")
+
+
+class STT:
+    def __init__(self):
+        cuda = ctranslate2.get_cuda_device_count() > 0
+        self.device = "cuda" if cuda else "cpu"
+        ctype = "float16" if cuda else "int8"
+        self.models = {}
+        for lvl in C.WHISPER_LEVELS:
+            path = C.MODELS_DIR / f"faster-whisper-{lvl}"
+            if (path / "model.bin").exists():
+                self.models[lvl] = WhisperModel(
+                    str(path), device=self.device, compute_type=ctype,
+                    cpu_threads=C.CPU_THREADS, local_files_only=True)
+                log.info("loaded whisper %s (%s/%s)", lvl, self.device, ctype)
+        if not self.models:
+            raise RuntimeError("لا توجد نماذج faster-whisper في " + str(C.MODELS_DIR))
+        self.order = [l for l in C.WHISPER_LEVELS if l in self.models]
+        self.default = C.WHISPER_DEFAULT if C.WHISPER_DEFAULT in self.models else self.order[0]
+        self.level = self.default
         self._lock = threading.Lock()
-        self._models: dict[str, WhisperModel] = {}
-        self._active = model_name
-        self._load(model_name)
+        self._rtf = deque(maxlen=8)
 
-    def _load(self, name: str) -> WhisperModel:
-        if name not in self._models:
-            with self._lock:
-                if name not in self._models:
-                    self._models[name] = WhisperModel(str(self.model_dir), device=self.device, compute_type=self.compute_type)
-        return self._models[name]
+    def transcribe(self, audio, language=None):
+        """يعيد (النص، اللغة، ثقة اللغة)."""
+        with self._lock:
+            model = self.models[self.level]
+            segs, info = model.transcribe(
+                audio, language=language, task="transcribe", beam_size=1, best_of=1,
+                temperature=0.0, condition_on_previous_text=False, without_timestamps=True,
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 300, "speech_pad_ms": 150})
+            parts = []
+            for s in segs:
+                if s.no_speech_prob > 0.7 and s.avg_logprob < -1.0:
+                    continue                                   # هلوسة على ضجيج
+                t = s.text.strip()
+                if t:
+                    parts.append(t)
+        text = " ".join(parts).strip()
+        return text, info.language, float(info.language_probability or 0.0)
 
-    def transcribe(self, audio: np.ndarray, language: str | None = None) -> tuple[str, str, float]:
-        model = self._load(self._active)
-        segments, info = model.transcribe(audio, language=language, vad_filter=True, beam_size=1, condition_on_previous_text=False)
-        text = " ".join(s.text.strip() for s in segments).strip()
-        return text, info.language or language or "auto", float(info.language_probability or 0.0)
-
-    @property
-    def active_model(self) -> str:
-        return self._active
+    def report_rtf(self, rtf: float):
+        """يعيد اسم المستوى الجديد إن تغيّر، وإلا None."""
+        self._rtf.append(rtf)
+        idx = self.order.index(self.level)
+        last3 = list(self._rtf)[-3:]
+        if idx > 0 and len(last3) == 3 and all(r > C.RTF_DOWN for r in last3):
+            self.level = self.order[idx - 1]
+            self._rtf.clear()
+            log.warning("RTF مرتفع → خفض النموذج إلى %s", self.level)
+            return self.level
+        if (self.order.index(self.level) < self.order.index(self.default)
+                and len(self._rtf) == self._rtf.maxlen
+                and sum(self._rtf) / len(self._rtf) < C.RTF_UP):
+            self.level = self.order[self.order.index(self.level) + 1]
+            self._rtf.clear()
+            log.info("RTF منخفض → رفع النموذج إلى %s", self.level)
+            return self.level
+        return None

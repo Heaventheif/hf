@@ -1,25 +1,39 @@
-from __future__ import annotations
-
+"""إعدادات مركزية (تُقرأ من متغيرات البيئة)."""
 import os
-from dataclasses import dataclass
 from pathlib import Path
 
+VERSION = "1.0.0"
+PORT = int(os.getenv("PORT", "7860"))
 
-@dataclass(frozen=True)
-class Settings:
-    port: int = int(os.getenv("PORT", "7860"))
-    whisper_model: str = os.getenv("WHISPER_MODEL", "tiny").strip()
-    whisper_device: str = os.getenv("WHISPER_DEVICE", "cpu").strip()
-    whisper_compute: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8").strip()
-    max_in_flight: int = int(os.getenv("MAX_IN_FLIGHT", "2"))
-    debug: bool = os.getenv("DEBUG", "false").lower() == "true"
-    whisper_dir: Path = Path(os.getenv("WHISPER_MODEL_DIR", "/models/whisper"))
-    translation_dir: Path = Path(os.getenv("TRANSLATION_MODEL_DIR", "/models/nllb"))
-    piper_dir: Path = Path(os.getenv("PIPER_MODEL_DIR", "/models/piper"))
+MODELS_DIR = Path(os.getenv("MODELS_DIR", str(Path.home() / "models")))
+VOICES_DIR = MODELS_DIR / "piper"
+NLLB_REPO = "JustFrederik/nllb-200-distilled-600M-ct2-int8"
+NLLB_DIR = MODELS_DIR / "nllb-200-distilled-600M-ct2-int8"
 
-    @property
-    def piper_model(self) -> Path:
-        return self.piper_dir / "ar_JO-kareem-medium.onnx"
+WHISPER_LEVELS = ["tiny", "base", "small"]          # من الأسرع إلى الأدق
+WHISPER_DEFAULT = os.getenv("WHISPER_MODEL", "base")
+DEFAULT_VOICE = os.getenv("DEFAULT_VOICE", "ar_JO-kareem-medium")
 
+API_KEY = os.getenv("API_KEY", "").strip()
+DEBUG = os.getenv("DEBUG", "").lower() in ("1", "true", "yes")
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+CPU_THREADS = int(os.getenv("CPU_THREADS", str(os.cpu_count() or 2)))
 
-settings = Settings()
+# --- الصوت الوارد ---
+SR = 16000
+MAX_UTT_SEC = 8.0        # أقصى طول للمقطع
+MIN_SILENCE_SEC = 0.35   # وقفة تنهي المقطع
+PAD_SEC = 0.2            # حشو قبل/بعد الكلام
+MIN_SPEECH_SEC = 0.25    # أقصر كلام مقبول
+
+# --- دمج الجمل ---
+MERGE_MAX_SEC = 6.0      # لا ننتظر دمجاً بعد هذا الطول
+MERGE_GAP_SEC = 1.5      # أقصى فجوة بين مقطعين يمكن دمجهما
+
+# --- المعالجة ---
+MAX_IN_FLIGHT = 2        # مقاطع قيد الانتظار/المعالجة لكل جلسة
+LS_MIN, LS_MAX = 0.8, 1.15   # حدود length_scale في Piper
+RTF_DOWN = 0.8           # فوق هذا القيمة ثلاث مرات متتالية → خفض نموذج STT
+RTF_UP = 0.3             # متوسط أقل من هذا → رفع النموذج
+CACHE_MAX_BYTES = 50 * 1024 * 1024

@@ -1,50 +1,56 @@
-from __future__ import annotations
-
-from pathlib import Path
+"""NLLB-200-distilled-600M (CTranslate2 int8) → العربية الفصحى (arb_Arab)."""
+import logging
+import threading
 
 import ctranslate2
-from transformers import AutoTokenizer
+from tokenizers import Tokenizer
+
+import config as C
+
+log = logging.getLogger("ytdub.mt")
+
+# رموز Whisper → رموز FLORES-200
+LANG_MAP = {
+    "en": "eng_Latn", "fr": "fra_Latn", "es": "spa_Latn", "de": "deu_Latn", "it": "ita_Latn",
+    "pt": "por_Latn", "ru": "rus_Cyrl", "tr": "tur_Latn", "zh": "zho_Hans", "ja": "jpn_Jpan",
+    "ko": "kor_Hang", "hi": "hin_Deva", "ur": "urd_Arab", "fa": "pes_Arab", "nl": "nld_Latn",
+    "pl": "pol_Latn", "id": "ind_Latn", "uk": "ukr_Cyrl", "sv": "swe_Latn", "vi": "vie_Latn",
+    "th": "tha_Thai", "he": "heb_Hebr", "cs": "ces_Latn", "ro": "ron_Latn", "el": "ell_Grek",
+    "hu": "hun_Latn", "bn": "ben_Beng", "ms": "zsm_Latn", "fi": "fin_Latn", "da": "dan_Latn",
+    "no": "nob_Latn", "bg": "bul_Cyrl", "ca": "cat_Latn", "sr": "srp_Cyrl", "hr": "hrv_Latn",
+}
+TARGETS = {"ar": "arb_Arab"}
+
+
+class UnsupportedLanguage(Exception):
+    pass
 
 
 class Translator:
-    def __init__(self, model_dir: Path):
-        self.tokenizer = AutoTokenizer.from_pretrained(str(model_dir), local_files_only=True)
-        self.engine = ctranslate2.Translator(str(model_dir), device="cpu", compute_type="int8")
-        self.lang_map = {
-            "en": "eng_Latn", "fr": "fra_Latn", "de": "deu_Latn", "es": "spa_Latn",
-            "it": "ita_Latn", "pt": "por_Latn", "tr": "tur_Latn", "ru": "rus_Cyrl",
-            "ja": "jpn_Jpan", "ko": "kor_Hang", "zh": "zho_Hans", "ar": "arb_Arab",
-        }
-
-    def _code(self, value: str) -> str:
-        value = (value or "").replace("-", "_")
-        return self.lang_map.get(value, value if "_" in value else "eng_Latn")
-
-    def _language_token_id(self, code: str) -> int:
-        """Get an NLLB language token from both slow and fast tokenizers."""
-        language_map = getattr(self.tokenizer, "lang_code_to_id", None)
-        if language_map and code in language_map:
-            return int(language_map[code])
-        token_id = self.tokenizer.convert_tokens_to_ids(code)
-        if isinstance(token_id, list):
-            token_id = token_id[0]
-        if token_id is None or token_id == self.tokenizer.unk_token_id:
-            token_id = self.tokenizer.convert_tokens_to_ids(f"__{code}__")
-        if isinstance(token_id, list):
-            token_id = token_id[0]
-        if token_id is None or token_id == self.tokenizer.unk_token_id:
-            raise ValueError(f"NLLB language token is missing: {code}")
-        return int(token_id)
+    def __init__(self, device: str = "cpu"):
+        if not (C.NLLB_DIR / "model.bin").exists():
+            raise RuntimeError("نموذج NLLB غير موجود في " + str(C.NLLB_DIR))
+        ctype = "float16" if device == "cuda" else "int8"
+        self.tr = ctranslate2.Translator(
+            str(C.NLLB_DIR), device=device, compute_type=ctype,
+            inter_threads=1, intra_threads=C.CPU_THREADS)
+        self.tok = Tokenizer.from_file(str(C.NLLB_DIR / "tokenizer.json"))
+        self._lock = threading.Lock()
+        log.info("loaded NLLB (%s/%s)", device, ctype)
 
     def translate(self, text: str, src: str, tgt: str = "ar") -> str:
-        if not text.strip():
-            return ""
-        src_code, tgt_code = self._code(src), self._code(tgt)
-        self.tokenizer.src_lang = src_code
-        encoded = self.tokenizer(text, return_tensors="np", add_special_tokens=True)
-        tokens = self.tokenizer.convert_ids_to_tokens(encoded["input_ids"][0].tolist())
-        target_token = self.tokenizer.convert_ids_to_tokens([self._language_token_id(tgt_code)])
-        result = self.engine.translate_batch([tokens], target_prefix=[target_token], beam_size=1)[0]
-        output_tokens = result.hypotheses[0]
-        ids = self.tokenizer.convert_tokens_to_ids(output_tokens)
-        return self.tokenizer.decode(ids, skip_special_tokens=True).strip()
+        src_code = LANG_MAP.get(src)
+        tgt_code = TARGETS.get(tgt)
+        if not src_code:
+            raise UnsupportedLanguage(src)
+        if not tgt_code:
+            raise UnsupportedLanguage(tgt)
+        pieces = self.tok.encode(text, add_special_tokens=False).tokens[:400]
+        source = [src_code] + pieces + ["</s>"]
+        with self._lock:
+            res = self.tr.translate_batch(
+                [source], target_prefix=[[tgt_code]], beam_size=2,
+                max_decoding_length=int(len(pieces) * 2 + 16), no_repeat_ngram_size=4)
+        out = res[0].hypotheses[0][1:]                       # أول رمز هو رمز اللغة
+        ids = [i for i in (self.tok.token_to_id(t) for t in out) if i is not None]
+        return self.tok.decode(ids, skip_special_tokens=True).strip()
