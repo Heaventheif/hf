@@ -39,9 +39,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message.type === "START") return sendResponse(await start(message.tabId));
     if (message.type === "STOP") { await stop(); return sendResponse({ ok: true }); }
-    if (message.type === "CONTENT_EVENT") {
+    if (message.type === "CONTENT_EVENT" && !message.forwarded) {
       const contexts = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] });
-      if (contexts.length) await chrome.runtime.sendMessage(message);
+      if (contexts.length) await chrome.runtime.sendMessage({ ...message, forwarded: true });
       return sendResponse({ ok: true });
     }
     if (message.type === "OFFSCREEN_STATUS") return sendResponse({ ok: true });

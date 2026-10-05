@@ -57,6 +57,17 @@ async def send_json(ws: WebSocket, payload: dict):
     await ws.send_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
+@app.get("/")
+async def root():
+    return {
+        "name": "YouTube Arabic AI Dubbing",
+        "status": "ready" if stt and translator and tts else "loading",
+        "websocket": "/ws",
+        "health": "/health",
+        "voices": "/voices",
+    }
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()

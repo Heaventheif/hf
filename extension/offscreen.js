@@ -40,6 +40,7 @@ async function start({ streamId, spaceUrl, mediaT0 }) {
   });
   await socket.connect({ type: "hello", session: sync.session, src_lang: "auto", voice: "ar_JO-kareem-medium", media_t0: mediaT0 || 0 });
   captureContext = new AudioContext();
+  await scheduler.resume();
   await captureContext.audioWorklet.addModule(chrome.runtime.getURL("capture-worklet.js"));
   captureStream = await navigator.mediaDevices.getUserMedia({ audio: { mandatory: { chromeMediaSource: "tab", chromeMediaSourceId: streamId } }, video: false });
   const source = captureContext.createMediaStreamSource(captureStream);
