@@ -8,9 +8,9 @@ app_port: 7860
 pinned: false
 ---
 
-# YouTube Arabic AI Dubbing: الخادم 1.2 (Hugging Face Docker Space)
+# YouTube Arabic AI Dubbing: الخادم 1.3 (Hugging Face Docker Space)
 
-> **مهم:** الإضافة 1.1 تتحقق من `protocol: 2` في `/health`. إن كان الـ Space يشغّل كوداً آخر ترفض الاتصال برسالة واضحة. بعد الرفع افتح `/health` وتأكد من `"protocol":2` و`"version":"1.2.0"`.
+> **مهم:** الإضافة 1.1 تتحقق من `protocol: 2` في `/health`. إن كان الـ Space يشغّل كوداً آخر ترفض الاتصال برسالة واضحة. بعد الرفع افتح `/health` وتأكد من `"protocol":2` و`"version":"1.3.0"`.
 
 خادم FastAPI/Uvicorn **بدون Gradio**: يستقبل صوتاً حياً (PCM16 ‏16kHz) عبر WebSocket، ويعيد دبلجة عربية:
 `VAD ← faster-whisper ← NLLB-200 (CT2 int8) ← Piper (Kareem)`.
@@ -23,6 +23,9 @@ pinned: false
 4. اختبر: افتح `https://USER-NAME.hf.space/health` ← يجب أن ترى `"status":"ok"`.
 5. (اختياري) **Settings ← Variables and secrets**: أضف Secret باسم `API_KEY` ثم أدخل نفس القيمة في إعدادات الإضافة.
    - Space العام + `API_KEY` هو الحل المعتمد لأن WebSocket من المتصفح لا يرسل ترويسة `Authorization`.
+
+## وضع الترجمة المسبقة (cues)
+العميل يرسل `{"type":"cues","session","lang","upto","cues":[{"i","s","e","t"}]}` (جمل نصية بأزمنة الفيديو)، فيترجمها الخادم وينطقها ويرد بـ `segment` بنفس `src_start/src_end`، ثم `silence` يدل على التقدّم حتى `upto`. في هذا الوضع لا يُرسَل صوت ولا يُشغَّل STT. `/health` يعرض `"features":["cues"]`.
 
 ## ملفات الأداء (تقليل التأخير)
 | الملف | المقطع الأقصى | دمج الجمل | الترجمة | الاستخدام |

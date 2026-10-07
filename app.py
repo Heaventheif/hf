@@ -71,7 +71,7 @@ def index():
 def health():
     status = "ok" if E.ready else ("error" if E.error else "loading")
     return {"status": status, "stt": E.stt is not None, "translation": E.mt is not None,
-            "tts": E.tts is not None, "device": E.device, "version": C.VERSION, "protocol": C.PROTOCOL,
+            "tts": E.tts is not None, "device": E.device, "version": C.VERSION, "protocol": C.PROTOCOL, "features": ["cues"],
             "stt_level": E.stt.level if E.stt else None, "error": E.error}
 
 
@@ -135,6 +135,9 @@ class Session:
         self.lang = None
         self.n_utt = 0
         self.warned_lang = False
+        self.cue_mode = False          # وضع الترجمة المسبقة (cues): لا صوت وارد
+        self.cue_upto = self.t0
+        self.cue_seen = set()
         self.tasks = [asyncio.create_task(self.stt_worker(self.id, self.q, self.ev)),
                       asyncio.create_task(self.emit_worker(self.id, self.eq, self.eev))]
 
@@ -171,7 +174,7 @@ class Session:
         if len(data) < 10:
             return
         sid, off = struct.unpack_from("<II", data, 0)
-        if sid != self.id:
+        if sid != self.id or self.cue_mode:
             return
         pcm = np.frombuffer(data, dtype="<i2", offset=8, count=(len(data) - 8) // 2)
         for u in self.seg.feed(pcm, off):
@@ -196,13 +199,36 @@ class Session:
             await self.send_json({"type": "pong"})
         elif t in ("seek", "hello"):
             self.reset(d)
+        elif t == "cues":
+            self.on_cues(d)
         elif t == "resync":
             if int(d.get("session", -1)) == self.id:
                 self.t0 = float(d["media_t"]) - int(d["sample_offset"]) / C.SR * self.rate
 
+    def on_cues(self, d: dict):
+        """ترجمة مسبقة: مقاطع نصية بأزمنة الفيديو (من ترجمات يوتيوب) تُترجم وتُنطق قبل موعدها."""
+        if int(d.get("session", -1)) != self.id:
+            return
+        self.cue_mode = True
+        lang = str(d.get("lang") or "en").split("-")[0].lower()
+        self.lang = lang
+        now = time.monotonic()
+        for c in d.get("cues", []):
+            i = c.get("i")
+            if i in self.cue_seen:
+                continue
+            self.cue_seen.add(i)
+            text = str(c.get("t", "")).strip()
+            if text:
+                self.push_emit((text, float(c["s"]), float(c["e"]), now))
+        self.cue_upto = max(self.cue_upto, float(d.get("upto", 0.0)))
+
     # ------------------------------------------------------------ تقدّم
     def frontier(self) -> float:
-        c = [self.tm(self.seg.frontier_sample())]
+        if self.cue_mode:
+            c = [self.cue_upto]
+        else:
+            c = [self.tm(self.seg.frontier_sample())]
         for x in (self.cur_start, self.emit_start):
             if x is not None:
                 c.append(x)
@@ -247,7 +273,7 @@ class Session:
                 await self.maybe_silence()
 
     def push_emit(self, item):
-        if len(self.eq) >= 3:                       # الخادم متأخر: تخلَّ عن الأقدم بدل مراكمة التأخير
+        if not self.cue_mode and len(self.eq) >= 3:   # صوت حي والخادم متأخر: تخلَّ عن الأقدم
             self.eq.popleft()
             log.warning("طابور الترجمة/النطق ممتلئ: إسقاط أقدم جملة")
         self.eq.append(item)
@@ -383,7 +409,7 @@ async def ws_endpoint(ws: WebSocket):
             await ws.close(code=1013)
             return
         sess = Session(ws, hello)
-        await sess.send_json({"type": "ready", "protocol": C.PROTOCOL, "session": sess.id, "voice": sess.voice,
+        await sess.send_json({"type": "ready", "protocol": C.PROTOCOL, "features": {"cues": True}, "session": sess.id, "voice": sess.voice,
                               "stt_level": E.stt.level, "device": E.device})
         while True:
             msg = await ws.receive()

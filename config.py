@@ -2,7 +2,7 @@
 import os
 from pathlib import Path
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 PROTOCOL = 2          # يتحقق منه العميل؛ يختلف إن كان الـ Space يشغّل كوداً آخر
 PORT = int(os.getenv("PORT", "7860"))
 
