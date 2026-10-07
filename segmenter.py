@@ -13,10 +13,6 @@ import config as C
 FRAME = int(C.SR * 0.03)                   # 30ms
 FRAME_SEC = FRAME / C.SR
 PAD_FRAMES = int(round(C.PAD_SEC / FRAME_SEC))
-SIL_FRAMES = int(round(C.MIN_SILENCE_SEC / FRAME_SEC))
-MAX_FRAMES = int(C.MAX_UTT_SEC / FRAME_SEC)
-CUT_WINDOW = int(1.2 / FRAME_SEC)
-MIN_CUT = int(2.0 / FRAME_SEC)
 
 
 @dataclass
@@ -31,8 +27,15 @@ class Utterance:
 
 
 class Segmenter:
-    def __init__(self):
+    def __init__(self, max_utt: float = C.MAX_UTT_SEC, min_silence: float = C.MIN_SILENCE_SEC):
+        self.configure(max_utt, min_silence)
         self.reset(0)
+
+    def configure(self, max_utt: float, min_silence: float):
+        self.sil_frames = max(1, int(round(min_silence / FRAME_SEC)))
+        self.max_frames = int(max_utt / FRAME_SEC)
+        self.cut_window = int(min(1.2, max_utt / 3) / FRAME_SEC)
+        self.min_cut = int(max_utt * 0.4 / FRAME_SEC)
 
     def reset(self, offset: int = 0):
         self.expected = offset
@@ -116,7 +119,7 @@ class Segmenter:
             self.silence_run += 1
 
         out = []
-        if self.silence_run >= SIL_FRAMES:
+        if self.silence_run >= self.sil_frames:
             end_idx = max(1, min(len(self.frames), len(self.frames) - self.silence_run + PAD_FRAMES))
             u = self._make(end_idx)
             if u:
@@ -125,8 +128,8 @@ class Segmenter:
                 self.pre.append((self.utt_start + i * FRAME, self.frames[i], self.rms[i]))
             self.in_speech = False
             self.frames, self.rms = [], []
-        elif len(self.frames) >= MAX_FRAMES:
-            lo_i = max(MIN_CUT, len(self.frames) - CUT_WINDOW)
+        elif len(self.frames) >= self.max_frames:
+            lo_i = max(self.min_cut, len(self.frames) - self.cut_window)
             cut = lo_i + int(np.argmin(self.rms[lo_i:])) + 1
             u = self._make(cut)
             if u:

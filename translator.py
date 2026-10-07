@@ -38,7 +38,7 @@ class Translator:
         self._lock = threading.Lock()
         log.info("loaded NLLB (%s/%s)", device, ctype)
 
-    def translate(self, text: str, src: str, tgt: str = "ar") -> str:
+    def translate(self, text: str, src: str, tgt: str = "ar", beam: int = 2) -> str:
         src_code = LANG_MAP.get(src)
         tgt_code = TARGETS.get(tgt)
         if not src_code:
@@ -49,7 +49,7 @@ class Translator:
         source = [src_code] + pieces + ["</s>"]
         with self._lock:
             res = self.tr.translate_batch(
-                [source], target_prefix=[[tgt_code]], beam_size=2,
+                [source], target_prefix=[[tgt_code]], beam_size=beam,
                 max_decoding_length=int(len(pieces) * 2 + 16), no_repeat_ngram_size=4)
         out = res[0].hypotheses[0][1:]                       # أول رمز هو رمز اللغة
         ids = [i for i in (self.tok.token_to_id(t) for t in out) if i is not None]

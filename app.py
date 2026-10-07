@@ -85,14 +85,17 @@ def run(fn, *a):
 
 
 class Session:
+    """مسار بمرحلتين متداخلتين: (التعرف STT) ثم (ترجمة + نطق) حتى لا ينتظر أحدهما الآخر."""
+
     def __init__(self, ws: WebSocket, hello: dict):
         self.ws = ws
         self.send_lock = asyncio.Lock()
         self.seg = Segmenter()
-        self.task = None
+        self.tasks = []
         self.src_hint = hello.get("src_lang", "auto") or "auto"
         self.speed = 1.0
         self.rate = 1.0
+        self.profile = C.DEFAULT_PROFILE
         self.voice = self._pick_voice(hello.get("voice"))
         self.last_level = E.stt.level
         self.reset(hello)
@@ -104,28 +107,36 @@ class Session:
         return C.DEFAULT_VOICE if E.tts.has(C.DEFAULT_VOICE) else E.tts.list_voices()[0]["id"]
 
     def reset(self, d: dict):
-        if self.task:
-            self.task.cancel()
+        for t in self.tasks:
+            t.cancel()
         self.id = int(d.get("session", 0))
         self.t0 = float(d.get("media_t0", 0.0))
         self.rate = max(0.25, min(4.0, float(d.get("rate", 1.0) or 1.0)))
         if "speed" in d:
             self.speed = max(0.7, min(1.5, float(d["speed"] or 1.0)))
+        if d.get("profile") in C.PROFILES:
+            self.profile = d["profile"]
         if "voice" in d:
             self.voice = self._pick_voice(d["voice"])
+        self.prof = C.PROFILES[self.profile]
+        self.seg.configure(self.prof["max_utt"], self.prof["min_silence"])
         self.seg.reset(0)
         self.stream_end = 0
-        self.q = deque()
+        self.q = deque()               # مقاطع بانتظار STT
         self.ev = asyncio.Event()
-        self.cur_start = None
-        self.pending = None            # (text, start, end)
+        self.eq = deque()              # نصوص بانتظار ترجمة+نطق: (text, start, end, t_arrival)
+        self.eev = asyncio.Event()
+        self.cur_start = None          # بداية المقطع قيد STT
+        self.emit_start = None         # بداية العنصر قيد الترجمة/النطق
+        self.pending = None            # (text, start, end, t_arr) لدمج الجمل
         self.flush_req = False
         self.seq = 0
         self.emitted_until = self.t0
         self.lang = None
         self.n_utt = 0
         self.warned_lang = False
-        self.task = asyncio.create_task(self.worker(self.id, self.q, self.ev))
+        self.tasks = [asyncio.create_task(self.stt_worker(self.id, self.q, self.ev)),
+                      asyncio.create_task(self.emit_worker(self.id, self.eq, self.eev))]
 
     def tm(self, sample: int) -> float:
         return self.t0 + sample / C.SR * self.rate
@@ -135,8 +146,8 @@ class Session:
         return self.seq
 
     async def close(self):
-        if self.task:
-            self.task.cancel()
+        for t in self.tasks:
+            t.cancel()
 
     # ------------------------------------------------------------ إرسال
     async def send_json(self, obj):
@@ -164,15 +175,16 @@ class Session:
             return
         pcm = np.frombuffer(data, dtype="<i2", offset=8, count=(len(data) - 8) // 2)
         for u in self.seg.feed(pcm, off):
+            u.t_arr = time.monotonic()
             if len(self.q) >= C.MAX_IN_FLIGHT:
                 self.q.popleft()
-                log.warning("طابور ممتلئ: إسقاط أقدم مقطع")
+                log.warning("طابور STT ممتلئ: إسقاط أقدم مقطع")
             self.q.append(u)
             self.ev.set()
         self.stream_end = off + len(pcm)
-        # دمج الجمل: لا تنتظر مقطعاً تالياً إلى الأبد
+        # دمج الجمل (ملف accurate): لا تنتظر مقطعاً تالياً إلى الأبد
         if (self.pending and not self.flush_req and not self.q and self.cur_start is None
-                and self.tm(self.stream_end) - self.pending[2] > C.MERGE_GAP_SEC):
+                and self.tm(self.stream_end) - self.pending[2] > C.MERGE_GAP_SEC * self.rate):
             self.flush_req = True
             self.q.append(FLUSH)
             self.ev.set()
@@ -191,9 +203,11 @@ class Session:
     # ------------------------------------------------------------ تقدّم
     def frontier(self) -> float:
         c = [self.tm(self.seg.frontier_sample())]
-        if self.cur_start is not None:
-            c.append(self.cur_start)
+        for x in (self.cur_start, self.emit_start):
+            if x is not None:
+                c.append(x)
         c += [self.tm(u.start) for u in self.q if u is not FLUSH]
+        c += [it[1] for it in self.eq]
         if self.pending:
             c.append(self.pending[1])
         return min(c)
@@ -205,8 +219,8 @@ class Session:
                                   "src_start": round(self.emitted_until, 3), "src_end": round(f, 3)})
             self.emitted_until = f
 
-    # ------------------------------------------------------------ معالجة
-    async def worker(self, sid, q, ev):
+    # ------------------------------------------------------------ المرحلة 1: STT
+    async def stt_worker(self, sid, q, ev):
         while True:
             while not q:
                 ev.clear()
@@ -219,18 +233,25 @@ class Session:
                     self.flush_req = False
                     if self.pending:
                         p, self.pending = self.pending, None
-                        await self.emit(sid, *p)
+                        self.push_emit(p)
                 else:
                     await self.handle(sid, item)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa
-                log.exception("pipeline error")
-                await self.send_json({"type": "error", "session": sid, "seq": self.seq, "stage": "pipeline"})
+                log.exception("stt stage error")
+                await self.send_json({"type": "error", "session": sid, "seq": self.seq, "stage": "stt"})
             finally:
                 self.cur_start = None
             if sid == self.id:
                 await self.maybe_silence()
+
+    def push_emit(self, item):
+        if len(self.eq) >= 3:                       # الخادم متأخر: تخلَّ عن الأقدم بدل مراكمة التأخير
+            self.eq.popleft()
+            log.warning("طابور الترجمة/النطق ممتلئ: إسقاط أقدم جملة")
+        self.eq.append(item)
+        self.eev.set()
 
     def lang_for_stt(self):
         if self.src_hint != "auto":
@@ -241,52 +262,72 @@ class Session:
         return self.lang
 
     async def handle(self, sid, u):
-        t_all = time.perf_counter()
+        t_start = time.perf_counter()
         self.cur_start = self.tm(u.start)
         text, lang, prob = await run(E.stt.transcribe, u.audio, self.lang_for_stt())
-        t_stt = time.perf_counter() - t_all
+        t_stt = time.perf_counter() - t_start
         if sid != self.id:
             return
-        log.info("[STT] seq=%d %.2fs (%s) dur=%.1fs", self.seq + 1, t_stt, E.stt.level, u.duration)
-        if text and self.src_hint == "auto":
+        log.info("[STT] %.2fs (%s) dur=%.1fs", t_stt, E.stt.level, u.duration)
+        if self.src_hint != "auto":
+            self.lang = self.src_hint
+        elif text:
             if self.lang is None and prob >= 0.6:
                 self.lang = lang
             elif self.lang is not None and lang != self.lang and prob >= 0.8:
                 self.lang = lang
-        if self.src_hint != "auto":
-            self.lang = self.src_hint
         start, end = self.tm(u.start), self.tm(u.end)
-        emits = []
         if text:
-            p = self.pending
-            if p and start - p[2] > C.MERGE_GAP_SEC:
-                emits.append(p)
-                p = None
-            self.pending = None
-            if p:
-                text, start = p[0] + " " + text, p[1]
-            if SENTENCE_END.search(text) or (end - start) >= C.MERGE_MAX_SEC:
-                emits.append((text, start, end))
+            if not self.prof["merge"]:
+                self.push_emit((text, start, end, u.t_arr))
             else:
-                self.pending = (text, start, end)
-        t1 = time.perf_counter()
-        for (tx, s, e) in emits:
-            await self.emit(sid, tx, s, e)
-        proc = t_stt + (time.perf_counter() - t1)
-        rtf = proc / max(u.duration, 0.5)
-        E.stt.report_rtf(rtf)
+                p = self.pending
+                if p and start - p[2] > C.MERGE_GAP_SEC * self.rate:
+                    self.push_emit(p)
+                    p = None
+                self.pending = None
+                t_arr = u.t_arr
+                if p:
+                    text, start, t_arr = p[0] + " " + text, p[1], p[3]
+                if SENTENCE_END.search(text) or (end - start) >= C.MERGE_MAX_SEC * self.rate:
+                    self.push_emit((text, start, end, t_arr))
+                else:
+                    self.pending = (text, start, end, t_arr)
+        E.stt.report_rtf(t_stt / max(u.duration, 0.5))
         if E.stt.level != self.last_level:
             self.last_level = E.stt.level
             await self.send_json({"type": "quality", "level": E.stt.level})
 
-    async def emit(self, sid, text, start, end):
+    # ------------------------------------------------------------ المرحلة 2: ترجمة + نطق
+    async def emit_worker(self, sid, eq, eev):
+        while True:
+            while not eq:
+                eev.clear()
+                await eev.wait()
+            item = eq.popleft()
+            if sid != self.id:
+                return
+            self.emit_start = item[1]
+            try:
+                await self.emit(sid, *item)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa
+                log.exception("emit stage error")
+                await self.send_json({"type": "error", "session": sid, "seq": self.seq, "stage": "pipeline"})
+            finally:
+                self.emit_start = None
+            if sid == self.id:
+                await self.maybe_silence()
+
+    async def emit(self, sid, text, start, end, t_arr):
         lang = self.lang or "en"
         if lang == "ar":
             return                                       # المصدر عربي أصلاً
         seq = self.seq + 1
         t0 = time.perf_counter()
         try:
-            text_ar = await run(E.mt.translate, text, lang, "ar")
+            text_ar = await run(E.mt.translate, text, lang, "ar", self.prof["beam"])
         except UnsupportedLanguage:
             if not self.warned_lang:
                 self.warned_lang = True
@@ -304,11 +345,12 @@ class Session:
         t_tts = time.perf_counter() - t1
         if sid != self.id or not pcm:
             return
-        log.info("[MT] seq=%d %.2fs [TTS] %.2fs ls=%.2f", seq, t_mt, t_tts, ls)
+        lat = time.monotonic() - t_arr                      # من نهاية المقطع حتى جاهزية الصوت
+        log.info("[MT] %.2fs [TTS] %.2fs ls=%.2f | server-latency %.2fs", t_mt, t_tts, ls, lat)
         meta = {"type": "segment", "session": sid, "seq": self.next_seq(),
                 "src_start": round(start, 3), "src_end": round(end, 3), "sample_rate": sr,
                 "length_scale": round(ls, 2), "duration": round(len(pcm) / 2 / sr, 3),
-                "rate": self.rate}
+                "rate": self.rate, "lat": round(lat, 2), "mt": round(t_mt, 2), "tts": round(t_tts, 2)}
         if C.DEBUG:
             meta["text_src"], meta["text_ar"] = text, text_ar
         await self.send_segment(meta, pcm)

@@ -2,7 +2,7 @@
 import os
 from pathlib import Path
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 PROTOCOL = 2          # يتحقق منه العميل؛ يختلف إن كان الـ Space يشغّل كوداً آخر
 PORT = int(os.getenv("PORT", "7860"))
 
@@ -28,7 +28,14 @@ MIN_SILENCE_SEC = 0.28   # وقفة تنهي المقطع
 PAD_SEC = 0.2            # حشو قبل/بعد الكلام
 MIN_SPEECH_SEC = 0.25    # أقصر كلام مقبول
 
-# --- دمج الجمل ---
+# --- ملفات الأداء: «fast» يقلل التأخير (بلا دمج جمل، مقاطع قصيرة، ترجمة greedy) ---
+PROFILES = {
+    "fast":     {"max_utt": 3.5, "min_silence": 0.20, "merge": False, "beam": 1},
+    "accurate": {"max_utt": 5.5, "min_silence": 0.28, "merge": True,  "beam": 2},
+}
+DEFAULT_PROFILE = os.getenv("DEFAULT_PROFILE", "fast")
+
+# --- دمج الجمل (ملف accurate فقط) ---
 MERGE_MAX_SEC = 4.0      # لا ننتظر دمجاً بعد هذا الطول
 MERGE_GAP_SEC = 1.0      # أقصى فجوة بين مقطعين يمكن دمجهما
 

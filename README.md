@@ -8,9 +8,9 @@ app_port: 7860
 pinned: false
 ---
 
-# YouTube Arabic AI Dubbing: الخادم 1.1 (Hugging Face Docker Space)
+# YouTube Arabic AI Dubbing: الخادم 1.2 (Hugging Face Docker Space)
 
-> **مهم:** الإضافة 1.1 تتحقق من `protocol: 2` في `/health`. إن كان الـ Space يشغّل كوداً آخر ترفض الاتصال برسالة واضحة. بعد الرفع افتح `/health` وتأكد من `"protocol":2` و`"version":"1.1.0"`.
+> **مهم:** الإضافة 1.1 تتحقق من `protocol: 2` في `/health`. إن كان الـ Space يشغّل كوداً آخر ترفض الاتصال برسالة واضحة. بعد الرفع افتح `/health` وتأكد من `"protocol":2` و`"version":"1.2.0"`.
 
 خادم FastAPI/Uvicorn **بدون Gradio**: يستقبل صوتاً حياً (PCM16 ‏16kHz) عبر WebSocket، ويعيد دبلجة عربية:
 `VAD ← faster-whisper ← NLLB-200 (CT2 int8) ← Piper (Kareem)`.
@@ -24,11 +24,20 @@ pinned: false
 5. (اختياري) **Settings ← Variables and secrets**: أضف Secret باسم `API_KEY` ثم أدخل نفس القيمة في إعدادات الإضافة.
    - Space العام + `API_KEY` هو الحل المعتمد لأن WebSocket من المتصفح لا يرسل ترويسة `Authorization`.
 
+## ملفات الأداء (تقليل التأخير)
+| الملف | المقطع الأقصى | دمج الجمل | الترجمة | الاستخدام |
+|---|---|---|---|---|
+| `fast` (افتراضي) | 3.5 ث | لا | greedy | أقل تأخير |
+| `accurate` | 5.5 ث | نعم | beam=2 | ترجمة أفضل، تأخير أكبر بعدة ثوانٍ |
+
+مرحلتا (التعرف) و(الترجمة+النطق) تعملان **بالتوازي** على مقاطع مختلفة. كل رد `segment` يحمل `lat` (ثوانٍ من نهاية المقطع حتى جاهزية الصوت) و`mt` و`tts`، والسجلات تطبع `server-latency`. **التأخير الكلي ≈ طول المقطع + lat**. على CPU مجاني (2 vCPU) توقّع بضع ثوانٍ لكل مقطع؛ لخفضه أكثر يلزم عتاد أقوى (لم أُجهّز صورة GPU).
+
 ## متغيرات البيئة (كلها اختيارية)
 | المتغير | الافتراضي | الوصف |
 |---|---|---|
 | `API_KEY` | فارغ | إن وُجد: يُطلب في رسالة `hello` (وليس في الـ URL) |
 | `WHISPER_MODEL` | `base` | المستوى الابتدائي (`tiny`/`base`/`small`) |
+| `DEFAULT_PROFILE` | `fast` | `fast` أو `accurate` |
 | `DEFAULT_VOICE` | `ar_JO-kareem-medium` | |
 | `ALLOWED_ORIGINS` | فارغ | قائمة Origins مسموحة للـ WebSocket، مثل `chrome-extension://ID` |
 | `CORS_ORIGINS` | `*` | لـ `/health` و`/voices` |
